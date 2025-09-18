@@ -1,0 +1,67 @@
+[package]
+name = "csv_ingest"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Library for parsing CSV files. It focuses on high throughput, low memory, and correctness by default."
+repository = "https://github.com/roger-rodriguez/csv-ingest"
+readme = "README.md"
+keywords = ["csv", "streaming", "ingest", "parsing"]
+categories = [
+  "data-structures",
+  "encoding",
+  "filesystem",
+  "parser-implementations",
+]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE", "examples/**"]
+exclude = ["Cargo.lock", "Cargo.toml.orig", ".github/**"]
+
+[lib]
+name = "csv_ingest"
+path = "src/lib.rs"
+
+[features]
+default = []
+fast_local = ["memmap2", "memchr", "num_cpus"]
+
+[dependencies]
+anyhow = "1"
+async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
+bytes = "1"
+csv-async = { version = "1", default-features = false, features = ["tokio"] }
+encoding_rs = "0.8"
+futures = "0.3"
+tokio = { version = "1", features = [
+  "fs",
+  "io-util",
+  "macros",
+  "rt-multi-thread",
+] }
+tokio-util = { version = "0.7", features = ["codec", "io", "compat"] }
+clap = { version = "4" }
+crc32fast = "1"
+memmap2 = { version = "0.9", optional = true }
+memchr = { version = "2.7", optional = true }
+num_cpus = { version = "1.16", optional = true }
+thiserror = { version = "2.0.16" }
+
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "gen"
+path = "bin/gen.rs"
+
+[[bin]]
+name = "bench"
+path = "bin/bench.rs"
+
+[profile.release]
+codegen-units = 1
+opt-level = 3
+lto = "thin"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

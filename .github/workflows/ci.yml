@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 06:00 UTC (2am ET)
+    - cron: "0 6 * * *"
+
+jobs:
+  build-test-bench:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (warnings as errors)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build (default features)
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --all --locked --no-fail-fast
+
+      # ---- Local perf smoke: generate CSV and run bench ----
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Generate 5M rows (zstd)
+        run: |
+          mkdir -p data
+          # gen & bench binaries built by the earlier `cargo build --release`
+          ./target/release/gen --rows 5000000 --with-header | zstd -T0 -q -o data/5m.csv.zst
+          ls -lh data
+
+      - name: Bench (local file)
+        id: bench
+        run: |
+          set -euo pipefail
+          OUT=$(./target/release/bench --path data/5m.csv.zst --required sku)
+          echo "$OUT"
+          # Extract rows/sec if present (last token)
+          RPS=$(echo "$OUT" | awk '/rows\/sec=/{print $NF}' | tail -n1)
+          echo "rps=$RPS" >> "$GITHUB_OUTPUT"
+
+      - name: Publish summary
+        if: always()
+        env:
+          RPS: ${{ steps.bench.outputs.rps }}
+        run: |
+          {
+            echo "## csv_ingest CI Summary"
+            echo ""
+            echo "**Rust:** stable"
+            echo ""
+            echo "### Bench (5M rows, zstd)"
+            echo '```'
+            ./target/release/bench --path data/5m.csv.zst --required sku || true
+            echo '```'
+            if [ -n "${RPS:-}" ]; then
+              echo ""
+              echo "- Parsed rows/sec: **${RPS}**"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
