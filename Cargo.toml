@@ -14,7 +14,6 @@ categories = [
   "parser-implementations",
 ]
 include = ["src/**", "Cargo.toml", "README.md", "LICENSE", "examples/**"]
-exclude = ["Cargo.lock", "Cargo.toml.orig", ".github/**"]
 
 [lib]
 name = "csv_ingest"
