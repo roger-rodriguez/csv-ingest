@@ -1,6 +1,6 @@
 [package]
 name = "csv_ingest"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Library for parsing CSV files. It focuses on high throughput, low memory, and correctness by default."
