@@ -17,10 +17,8 @@ Rust Library for parsing CSV files from local files or any async source (`AsyncR
 
 ## 🚀 Quickstart
 
-```toml
-# Cargo.toml
-[dependencies]
-csv_ingest = { git = "https://github.com/roger-rodriguez/csv-ingest" }
+```shell
+cargo add csv_ingest
 ```
 
 If you need to parse from a remote source, construct an `AsyncRead` in your app (e.g., a `reqwest` byte stream) and pass it to `build_csv_reader`/`process_csv_stream`.
