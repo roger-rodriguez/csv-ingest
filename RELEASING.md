@@ -1,69 +1,86 @@
-# Publishing this crate
+# Releasing `csv_ingest`
 
-This is the process for releasing a new version of this crate to crates.io.
+Only `crates/csv-ingest` is published. Workspace packages under `tools/` must
+remain unpublished and must not appear in the packaged crate.
 
-## 0. Preflight
+## 1. Prepare a release pull request
 
-Update Rust:
+1. Start from current `main` on a dedicated release branch.
+2. Update the version in `crates/csv-ingest/Cargo.toml`.
+3. Refresh both `Cargo.lock` and `tools/csv-ingest-fuzz/Cargo.lock`.
+4. Move the release notes from `[Unreleased]` into a dated section in
+   `CHANGELOG.md`, including migration instructions for breaking changes.
+5. Run the complete release validation below.
+6. Open a pull request and merge it only after required CI passes.
+
+## 2. Validate the release
+
+Update stable, then run the supported minimum and current stable toolchains
+explicitly:
 
 ```bash
 rustup update stable
+cargo +1.82.0 test -p csv_ingest --all-targets --all-features --locked --no-fail-fast
+cargo +stable fmt --all -- --check
+cargo +stable clippy --workspace --all-targets --all-features -- -D warnings
+cargo +stable test --workspace --all-targets --all-features --locked --no-fail-fast
+cargo +stable doc -p csv_ingest --no-deps --all-features
 ```
 
-CI must pass on both the declared Rust 1.82 MSRV and the latest stable
-toolchain before release.
-
-## 1. Update `crates/csv-ingest/Cargo.toml`
-
-```toml
-[package]
-name = "crate-name"
-version = "X.X.X"
-```
-
-## 2. Lint, test, and docs
+Run the same coverage thresholds enforced by CI:
 
 ```bash
-cargo fmt --all
-cargo clippy -p csv_ingest --all-targets --all-features -- -D warnings
-cargo test -p csv_ingest --all-targets --all-features --locked
-cargo doc -p csv_ingest --no-deps --all-features
+cargo +stable llvm-cov \
+  --package csv_ingest \
+  --all-features \
+  --all-targets \
+  --ignore-filename-regex '(^|/)(bin|examples)/' \
+  --fail-under-lines 95 \
+  --fail-under-file-lines 90 \
+  --summary-only
 ```
 
-## 3. Package locally
-
-This is the same required package-verification gate run by CI. It must compile
-the packaged artifact successfully without warnings.
+Verify the exact crate contents and the crates.io upload without publishing:
 
 ```bash
-cargo package -p csv_ingest --locked
+cargo +stable package -p csv_ingest --locked
+cargo +stable publish -p csv_ingest --locked --dry-run
 ```
 
-## 4. Dry-run publish
+Inspect `cargo package -p csv_ingest --locked --list` and confirm that no
+workspace tools, fuzz targets, generated data, or build artifacts are included.
+
+## 3. Publish the merged commit
+
+Publishing is irreversible. Obtain explicit maintainer confirmation immediately
+before this section.
+
+1. Switch to `main`, pull with `--ff-only`, and verify a clean working tree.
+2. Confirm the release pull request and current `main` CI are green.
+3. Confirm the manifest and package both report the intended version.
+4. Publish the exact merged commit:
 
 ```bash
-cargo publish -p csv_ingest --dry-run
+cargo +stable publish -p csv_ingest --locked
 ```
 
-## 5. Publish for real
+5. Tag that same commit and create the GitHub release from the matching changelog
+   section:
 
 ```bash
-cargo publish -p csv_ingest
+git tag -a vX.Y.Z -m "csv_ingest vX.Y.Z"
+git push origin vX.Y.Z
+gh release create vX.Y.Z --verify-tag --title "csv_ingest vX.Y.Z" --notes-file <release-notes-file>
 ```
 
-## 6. Post-publish
+6. Verify the new version on crates.io and confirm its generated documentation
+   builds successfully on docs.rs.
+
+## Recovery
+
+Published crate contents cannot be replaced. If a release is unusable, yank it,
+fix the problem, increment the version, and publish a new release:
 
 ```bash
-git tag v0.X.0
-git push --tags
+cargo yank --vers X.Y.Z csv_ingest
 ```
-
-## If something goes wrong
-
-- Yank a bad release:
-
-```bash
-cargo yank --vers 0.X.0 crate-name
-```
-
-- Fix, bump the version, and publish again.
