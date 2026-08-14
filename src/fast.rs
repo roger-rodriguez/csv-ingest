@@ -1,14 +1,14 @@
-use crate::CsvIngestSummary;
+use crate::{CsvHeaderMode, CsvIngestSummary, CsvOptions, CsvTerminator};
 use anyhow::{anyhow, Result};
 use crc32fast::Hasher as Crc32;
-use memchr::{memchr, memchr_iter};
+use memchr::{memchr, memchr2, memchr_iter};
 use memmap2::MmapOptions;
 use std::fs::File;
 use std::path::Path;
 use std::thread;
 
 const FIELD_SEPARATOR: u8 = 0x1f;
-const QUOTE: u8 = b'"';
+const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 struct ChunkResult {
     row_count: usize,
@@ -21,9 +21,8 @@ struct ChunkResult {
 /// parsed portion of the file is rejected instead of being interpreted incorrectly.
 pub fn fast_local_process(
     path: &Path,
-    delimiter: u8,
-    line_break: u8,
     required_headers: &[&str],
+    options: &CsvOptions,
     verify_crc: bool,
     limit_rows: Option<u64>,
 ) -> Result<(CsvIngestSummary, Option<u32>)> {
@@ -32,9 +31,8 @@ pub fn fast_local_process(
         .unwrap_or(1);
     fast_local_process_with_workers(
         path,
-        delimiter,
-        line_break,
         required_headers,
+        options,
         verify_crc,
         limit_rows,
         workers,
@@ -43,13 +41,19 @@ pub fn fast_local_process(
 
 fn fast_local_process_with_workers(
     path: &Path,
-    delimiter: u8,
-    line_break: u8,
     required_headers: &[&str],
+    options: &CsvOptions,
     verify_crc: bool,
     limit_rows: Option<u64>,
     workers: usize,
 ) -> Result<(CsvIngestSummary, Option<u32>)> {
+    options.validate().map_err(anyhow::Error::from)?;
+    if options.headers == CsvHeaderMode::Absent && !required_headers.is_empty() {
+        return Err(anyhow!(
+            "required headers cannot be validated when headers are absent"
+        ));
+    }
+
     let file = File::open(path)?;
     let metadata = file.metadata()?;
     let len = metadata.len() as usize;
@@ -57,7 +61,13 @@ fn fast_local_process_with_workers(
     let mmap = unsafe { MmapOptions::new().map(&file)? };
     let data: &[u8] = &mmap[..];
 
-    if len == 0 {
+    let data_start = usize::from(data.starts_with(UTF8_BOM)) * UTF8_BOM.len();
+    if data_start == len {
+        if options.headers == CsvHeaderMode::Present {
+            if let Some(required) = required_headers.first() {
+                return Err(anyhow!("Missing required header: '{required}'"));
+            }
+        }
         return Ok((
             CsvIngestSummary {
                 row_count: 0,
@@ -67,11 +77,23 @@ fn fast_local_process_with_workers(
         ));
     }
 
-    let header_end = memchr(line_break, data).unwrap_or(len);
-    let raw_header = &data[..header_end];
-    reject_quotes(raw_header, 0)?;
-    let header = strip_trailing_cr(raw_header, line_break);
-    let headers = parse_header(header, delimiter)?;
+    let (headers, body_start, expected_width) = if options.headers == CsvHeaderMode::Present {
+        let (header_end, body_start) =
+            next_record_terminator(data, data_start, len, options.terminator).unwrap_or((len, len));
+        let raw_header = &data[data_start..header_end];
+        reject_quotes(raw_header, data_start, options)?;
+        let headers = parse_header(raw_header, options.delimiter, options.trims_headers())?;
+        let expected_width = Some(headers.len());
+        (headers, body_start, expected_width)
+    } else {
+        let expected_width = (!options.flexible).then(|| {
+            let first_end = next_record_terminator(data, data_start, len, options.terminator)
+                .map(|(record_end, _)| record_end)
+                .unwrap_or(len);
+            memchr_iter(options.delimiter, &data[data_start..first_end]).count() + 1
+        });
+        (Vec::new(), data_start, expected_width)
+    };
 
     let required_indices = required_headers
         .iter()
@@ -84,10 +106,8 @@ fn fast_local_process_with_workers(
         .collect::<Result<Vec<_>>>()?;
     let max_required_index = required_indices.into_iter().max();
 
-    let body_start = (header_end + 1).min(len);
-    let body_end = limited_body_end(data, body_start, len, line_break, limit_rows);
-    let bounds = chunk_bounds(data, body_start, body_end, line_break, workers);
-    let expected_width = headers.len();
+    let body_end = limited_body_end(data, body_start, len, options.terminator, limit_rows);
+    let bounds = chunk_bounds(data, body_start, body_end, options.terminator, workers);
 
     let chunk_results = thread::scope(|scope| -> Result<Vec<ChunkResult>> {
         let mut handles = Vec::with_capacity(bounds.len().saturating_sub(1));
@@ -99,8 +119,7 @@ fn fast_local_process_with_workers(
                 process_chunk(
                     slice,
                     start,
-                    delimiter,
-                    line_break,
+                    options,
                     max_required_index,
                     expected_width,
                     verify_crc,
@@ -133,14 +152,16 @@ fn fast_local_process_with_workers(
     ))
 }
 
-fn parse_header(header: &[u8], delimiter: u8) -> Result<Vec<String>> {
+fn parse_header(header: &[u8], delimiter: u8, trim: bool) -> Result<Vec<String>> {
     let mut headers = Vec::new();
     let mut start = 0usize;
     for end in memchr_iter(delimiter, header) {
-        headers.push(std::str::from_utf8(&header[start..end])?.to_string());
+        let value = trim_ascii_if(&header[start..end], trim);
+        headers.push(std::str::from_utf8(value)?.to_string());
         start = end + 1;
     }
-    headers.push(std::str::from_utf8(&header[start..])?.to_string());
+    let value = trim_ascii_if(&header[start..], trim);
+    headers.push(std::str::from_utf8(value)?.to_string());
     Ok(headers)
 }
 
@@ -148,7 +169,7 @@ fn limited_body_end(
     data: &[u8],
     body_start: usize,
     len: usize,
-    line_break: u8,
+    terminator: CsvTerminator,
     limit_rows: Option<u64>,
 ) -> usize {
     let Some(limit) = limit_rows else {
@@ -159,11 +180,13 @@ fn limited_body_end(
     }
 
     let mut rows = 0u64;
-    for offset in memchr_iter(line_break, &data[body_start..len]) {
+    let mut cursor = body_start;
+    while let Some((_, next_record)) = next_record_terminator(data, cursor, len, terminator) {
         rows += 1;
         if rows == limit {
-            return body_start + offset + 1;
+            return next_record;
         }
+        cursor = next_record;
     }
 
     len
@@ -173,7 +196,7 @@ fn chunk_bounds(
     data: &[u8],
     body_start: usize,
     body_end: usize,
-    line_break: u8,
+    terminator: CsvTerminator,
     requested_workers: usize,
 ) -> Vec<usize> {
     if body_start == body_end {
@@ -187,8 +210,8 @@ fn chunk_bounds(
 
     for worker in 1..workers {
         let approximate = body_start + body_len.saturating_mul(worker) / workers;
-        let next = memchr(line_break, &data[approximate..body_end])
-            .map(|offset| approximate + offset + 1)
+        let next = next_record_terminator(data, approximate, body_end, terminator)
+            .map(|(_, next)| next)
             .unwrap_or(body_end);
         if next > *bounds.last().expect("body start is present") && next < body_end {
             bounds.push(next);
@@ -202,36 +225,36 @@ fn chunk_bounds(
 fn process_chunk(
     slice: &[u8],
     absolute_start: usize,
-    delimiter: u8,
-    line_break: u8,
+    options: &CsvOptions,
     max_required_index: Option<usize>,
-    expected_width: usize,
+    expected_width: Option<usize>,
     verify_crc: bool,
 ) -> Result<ChunkResult> {
-    reject_quotes(slice, absolute_start)?;
+    reject_quotes(slice, absolute_start, options)?;
 
     let mut row_count = 0usize;
     let mut cursor = 0usize;
     let mut crc = verify_crc.then(Crc32::new);
 
-    for newline in memchr_iter(line_break, slice) {
-        let row = strip_trailing_cr(&slice[cursor..newline], line_break);
+    while let Some((record_end, next_record)) =
+        next_record_terminator(slice, cursor, slice.len(), options.terminator)
+    {
+        let row = &slice[cursor..record_end];
         process_row(
             row,
-            delimiter,
+            options,
             max_required_index,
             expected_width,
             crc.as_mut(),
         )?;
         row_count += 1;
-        cursor = newline + 1;
+        cursor = next_record;
     }
 
     if cursor < slice.len() {
-        let row = strip_trailing_cr(&slice[cursor..], line_break);
         process_row(
-            row,
-            delimiter,
+            &slice[cursor..],
+            options,
             max_required_index,
             expected_width,
             crc.as_mut(),
@@ -244,36 +267,59 @@ fn process_chunk(
 
 fn process_row(
     row: &[u8],
-    delimiter: u8,
+    options: &CsvOptions,
     max_required_index: Option<usize>,
-    expected_width: usize,
+    expected_width: Option<usize>,
     crc: Option<&mut Crc32>,
 ) -> Result<()> {
-    if let Some(crc) = crc {
-        let mut field_start = 0usize;
-        let mut field_count = 0usize;
-        for field_end in memchr_iter(delimiter, row) {
+    if crc.is_none() && options.flexible {
+        if let Some(max_required_index) = max_required_index {
+            let delimiter_count = memchr_iter(options.delimiter, row)
+                .take(max_required_index)
+                .count();
+            if delimiter_count < max_required_index {
+                return Err(anyhow!(
+                    "row is missing required field at column index {max_required_index}"
+                ));
+            }
+        }
+        return Ok(());
+    }
+
+    let mut crc = crc;
+    let mut field_start = 0usize;
+    let mut field_count = 0usize;
+    for field_end in memchr_iter(options.delimiter, row) {
+        if let Some(crc) = crc.as_mut() {
             if field_count > 0 {
                 crc.update(&[FIELD_SEPARATOR]);
             }
-            crc.update(&row[field_start..field_end]);
-            field_count += 1;
-            field_start = field_end + 1;
+            crc.update(trim_ascii_if(
+                &row[field_start..field_end],
+                options.trims_fields(),
+            ));
         }
+        field_count += 1;
+        field_start = field_end + 1;
+    }
+    if let Some(crc) = crc.as_mut() {
         if field_count > 0 {
             crc.update(&[FIELD_SEPARATOR]);
         }
-        crc.update(&row[field_start..]);
-        field_count += 1;
+        crc.update(trim_ascii_if(&row[field_start..], options.trims_fields()));
+    }
+    field_count += 1;
 
-        if field_count != expected_width {
-            return Err(anyhow!(
-                "row width mismatch: got {field_count}, expected {expected_width}"
-            ));
+    if !options.flexible {
+        if let Some(expected_width) = expected_width {
+            if field_count != expected_width {
+                return Err(anyhow!(
+                    "row width mismatch: got {field_count}, expected {expected_width}"
+                ));
+            }
         }
     } else if let Some(max_required_index) = max_required_index {
-        let delimiter_count = memchr_iter(delimiter, row).take(max_required_index).count();
-        if delimiter_count < max_required_index {
+        if field_count <= max_required_index {
             return Err(anyhow!(
                 "row is missing required field at column index {max_required_index}"
             ));
@@ -283,22 +329,55 @@ fn process_row(
     Ok(())
 }
 
-fn reject_quotes(bytes: &[u8], absolute_start: usize) -> Result<()> {
-    if let Some(offset) = memchr(QUOTE, bytes) {
-        return Err(anyhow!(
-            "fast-local supports only unquoted CSV; found a quote byte at offset {}",
-            absolute_start + offset
-        ));
+fn reject_quotes(bytes: &[u8], absolute_start: usize, options: &CsvOptions) -> Result<()> {
+    if options.quoting {
+        if let Some(offset) = memchr(options.quote, bytes) {
+            return Err(anyhow!(
+                "fast-local supports only unquoted CSV; found quote byte {:?} at offset {}",
+                options.quote as char,
+                absolute_start + offset
+            ));
+        }
     }
     Ok(())
 }
 
-fn strip_trailing_cr(row: &[u8], line_break: u8) -> &[u8] {
-    if line_break == b'\n' && row.last() == Some(&b'\r') {
-        &row[..row.len() - 1]
+fn next_record_terminator(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    terminator: CsvTerminator,
+) -> Option<(usize, usize)> {
+    let record_end = match terminator {
+        CsvTerminator::CrLf => memchr2(b'\r', b'\n', &data[start..end])? + start,
+        CsvTerminator::Any(byte) => memchr(byte, &data[start..end])? + start,
+    };
+    let next_record = if terminator == CsvTerminator::CrLf
+        && data[record_end] == b'\r'
+        && record_end + 1 < end
+        && data[record_end + 1] == b'\n'
+    {
+        record_end + 2
     } else {
-        row
+        record_end + 1
+    };
+    Some((record_end, next_record))
+}
+
+fn trim_ascii_if(bytes: &[u8], trim: bool) -> &[u8] {
+    if !trim {
+        return bytes;
     }
+
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map_or(start, |index| index + 1);
+    &bytes[start..end]
 }
 
 #[cfg(test)]
@@ -329,9 +408,15 @@ mod tests {
     #[test]
     fn limit_is_global_across_workers() {
         let file = fixture(b"sku,value\nA,1\nB,2\nC,3\nD,4\n");
-        let (summary, crc) =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], true, Some(2), 8)
-                .expect("parse limited fixture");
+        let (summary, crc) = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            true,
+            Some(2),
+            8,
+        )
+        .expect("parse limited fixture");
 
         assert_eq!(summary.row_count, 2);
         assert_eq!(crc, Some(expected_crc(&[&[b"A", b"1"], &[b"B", b"2"]])));
@@ -340,9 +425,15 @@ mod tests {
     #[test]
     fn final_unterminated_row_is_parsed_and_verified() {
         let file = fixture(b"sku,value\nA,1\nB,2");
-        let (summary, crc) =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], true, None, 4)
-                .expect("parse unterminated fixture");
+        let (summary, crc) = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            true,
+            None,
+            4,
+        )
+        .expect("parse unterminated fixture");
 
         assert_eq!(summary.row_count, 2);
         assert_eq!(crc, Some(expected_crc(&[&[b"A", b"1"], &[b"B", b"2"]])));
@@ -351,9 +442,15 @@ mod tests {
     #[test]
     fn crlf_is_removed_from_headers_and_fields() {
         let file = fixture(b"sku,value\r\nA,1\r\nB,2\r\n");
-        let (summary, crc) =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["value"], true, None, 4)
-                .expect("parse CRLF fixture");
+        let (summary, crc) = fast_local_process_with_workers(
+            file.path(),
+            &["value"],
+            &CsvOptions::default(),
+            true,
+            None,
+            4,
+        )
+        .expect("parse CRLF fixture");
 
         assert_eq!(summary.headers, ["sku", "value"]);
         assert_eq!(summary.row_count, 2);
@@ -363,9 +460,15 @@ mod tests {
     #[test]
     fn quote_bytes_are_rejected() {
         let file = fixture(b"sku,value\nA,\"quoted,field\"\n");
-        let error =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], false, None, 4)
-                .expect_err("quoted input must be rejected");
+        let error = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            false,
+            None,
+            4,
+        )
+        .expect_err("quoted input must be rejected");
 
         assert!(error.to_string().contains("only unquoted CSV"));
     }
@@ -373,12 +476,24 @@ mod tests {
     #[test]
     fn verification_is_independent_of_worker_count() {
         let file = fixture(b"sku,value\nA,1\nB,2\nC,3\nD,4\nE,5\n");
-        let one_worker =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], true, None, 1)
-                .expect("parse with one worker");
-        let many_workers =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], true, None, 8)
-                .expect("parse with many workers");
+        let one_worker = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            true,
+            None,
+            1,
+        )
+        .expect("parse with one worker");
+        let many_workers = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            true,
+            None,
+            8,
+        )
+        .expect("parse with many workers");
 
         assert_eq!(one_worker.0.row_count, many_workers.0.row_count);
         assert_eq!(one_worker.1, many_workers.1);
@@ -387,9 +502,15 @@ mod tests {
     #[test]
     fn empty_file_returns_an_empty_summary() {
         let file = fixture(b"");
-        let (summary, crc) =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], true, None, 4)
-                .expect("parse empty fixture");
+        let (summary, crc) = fast_local_process_with_workers(
+            file.path(),
+            &[],
+            &CsvOptions::default(),
+            true,
+            None,
+            4,
+        )
+        .expect("parse empty fixture");
 
         assert!(summary.headers.is_empty());
         assert_eq!(summary.row_count, 0);
@@ -397,11 +518,33 @@ mod tests {
     }
 
     #[test]
+    fn empty_file_cannot_satisfy_a_required_header() {
+        let file = fixture(UTF8_BOM);
+        let error = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            false,
+            None,
+            1,
+        )
+        .expect_err("empty input has no required headers");
+
+        assert!(error.to_string().contains("Missing required header"));
+    }
+
+    #[test]
     fn header_only_file_has_no_body_rows() {
         let file = fixture(b"sku,value\n");
-        let (summary, crc) =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], true, None, 4)
-                .expect("parse header-only fixture");
+        let (summary, crc) = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            true,
+            None,
+            4,
+        )
+        .expect("parse header-only fixture");
 
         assert_eq!(summary.headers, ["sku", "value"]);
         assert_eq!(summary.row_count, 0);
@@ -411,9 +554,15 @@ mod tests {
     #[test]
     fn missing_required_header_is_rejected() {
         let file = fixture(b"sku,value\nA,1\n");
-        let error =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["missing"], false, None, 2)
-                .expect_err("missing header must fail");
+        let error = fast_local_process_with_workers(
+            file.path(),
+            &["missing"],
+            &CsvOptions::default(),
+            false,
+            None,
+            2,
+        )
+        .expect_err("missing header must fail");
 
         assert!(error.to_string().contains("Missing required header"));
     }
@@ -421,9 +570,15 @@ mod tests {
     #[test]
     fn verified_row_width_must_match_the_header() {
         let file = fixture(b"sku,value\nA\n");
-        let error =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], true, None, 2)
-                .expect_err("short verified row must fail");
+        let error = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            true,
+            None,
+            2,
+        )
+        .expect_err("short verified row must fail");
 
         assert!(error.to_string().contains("row width mismatch"));
     }
@@ -431,8 +586,12 @@ mod tests {
     #[test]
     fn unverified_row_must_contain_the_last_required_column() {
         let file = fixture(b"sku,value\nA\n");
+        let options = CsvOptions {
+            flexible: true,
+            ..CsvOptions::default()
+        };
         let error =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["value"], false, None, 2)
+            fast_local_process_with_workers(file.path(), &["value"], &options, false, None, 2)
                 .expect_err("short row must fail");
 
         assert!(error.to_string().contains("missing required field"));
@@ -441,9 +600,15 @@ mod tests {
     #[test]
     fn a_limit_larger_than_the_file_processes_every_row() {
         let file = fixture(b"sku,value\nA,1\nB,2");
-        let (summary, crc) =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], true, Some(100), 4)
-                .expect("parse fixture below limit");
+        let (summary, crc) = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            true,
+            Some(100),
+            4,
+        )
+        .expect("parse fixture below limit");
 
         assert_eq!(summary.row_count, 2);
         assert_eq!(crc, Some(expected_crc(&[&[b"A", b"1"], &[b"B", b"2"]])));
@@ -452,10 +617,104 @@ mod tests {
     #[test]
     fn quotes_in_the_header_are_rejected() {
         let file = fixture(b"\"sku\",value\nA,1\n");
-        let error =
-            fast_local_process_with_workers(file.path(), b',', b'\n', &["sku"], false, None, 2)
-                .expect_err("quoted header must fail");
+        let error = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            false,
+            None,
+            2,
+        )
+        .expect_err("quoted header must fail");
 
         assert!(error.to_string().contains("only unquoted CSV"));
+    }
+
+    #[test]
+    fn shared_options_control_delimiters_terminators_trimming_and_bom() {
+        let file = fixture(b"\xef\xbb\xbf sku ; value $ A ; 1 $ B ; 2 $");
+        let options = CsvOptions {
+            delimiter: b';',
+            terminator: CsvTerminator::Any(b'$'),
+            trim: crate::CsvTrim::All,
+            ..CsvOptions::default()
+        };
+        let (summary, crc) =
+            fast_local_process_with_workers(file.path(), &["sku"], &options, true, None, 4)
+                .expect("parse configured dialect");
+
+        assert_eq!(summary.headers, ["sku", "value"]);
+        assert_eq!(summary.row_count, 2);
+        assert_eq!(crc, Some(expected_crc(&[&[b"A", b"1"], &[b"B", b"2"]])));
+    }
+
+    #[test]
+    fn crlf_mode_accepts_lone_cr_and_lone_lf_terminators() {
+        let file = fixture(b"sku,value\rA,1\nB,2\r\nC,3");
+        let (summary, _) = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            false,
+            None,
+            8,
+        )
+        .expect("parse mixed CRLF terminators");
+
+        assert_eq!(summary.row_count, 3);
+    }
+
+    #[test]
+    fn headerless_mode_counts_every_record_and_requires_no_named_headers() {
+        let file = fixture(b"A,1\nB,2");
+        let options = CsvOptions {
+            headers: CsvHeaderMode::Absent,
+            ..CsvOptions::default()
+        };
+        let (summary, _) =
+            fast_local_process_with_workers(file.path(), &[], &options, false, None, 4)
+                .expect("parse headerless fixture");
+
+        assert_eq!(
+            summary,
+            CsvIngestSummary {
+                row_count: 2,
+                headers: vec![]
+            }
+        );
+
+        let error =
+            fast_local_process_with_workers(file.path(), &["sku"], &options, false, None, 1)
+                .expect_err("named headers require a header record");
+        assert!(error.to_string().contains("headers are absent"));
+    }
+
+    #[test]
+    fn disabled_quoting_treats_quote_bytes_as_regular_data() {
+        let file = fixture(b"sku,value\nA,a\"b\n");
+        let options = CsvOptions {
+            quoting: false,
+            ..CsvOptions::default()
+        };
+        let (summary, crc) =
+            fast_local_process_with_workers(file.path(), &["sku"], &options, true, None, 2)
+                .expect("parse literal quote byte");
+
+        assert_eq!(summary.row_count, 1);
+        assert_eq!(crc, Some(expected_crc(&[&[b"A", b"a\"b"]])));
+    }
+
+    #[test]
+    fn invalid_options_fail_before_parsing() {
+        let file = fixture(b"sku,value\nA,1\n");
+        let options = CsvOptions {
+            delimiter: b'\n',
+            ..CsvOptions::default()
+        };
+        let error =
+            fast_local_process_with_workers(file.path(), &["sku"], &options, false, None, 1)
+                .expect_err("invalid dialect must fail");
+
+        assert!(error.to_string().contains("delimiter"));
     }
 }

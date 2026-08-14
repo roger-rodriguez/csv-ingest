@@ -1,4 +1,4 @@
-use csv_ingest::{process_csv_stream, reader_from_path};
+use csv_ingest::{process_csv_stream, reader_from_path, CsvOptions};
 use std::{fs::File, io::Write, path::PathBuf, process::Command};
 
 #[tokio::test]
@@ -26,7 +26,7 @@ async fn parses_gzip_and_counts_rows() -> anyhow::Result<()> {
 
     // Parse via library
     let (reader, _meta) = reader_from_path(&gz_path).await?;
-    let summary = process_csv_stream(reader, &["sku"]).await?;
+    let summary = process_csv_stream(reader, &["sku"], &CsvOptions::default()).await?;
 
     assert_eq!(summary.row_count, 100_000);
     assert_eq!(summary.headers, vec!["sku".to_string(), "col1".to_string()]);
