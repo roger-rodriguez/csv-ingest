@@ -10,6 +10,23 @@ on:
     - cron: "0 6 * * *"
 
 jobs:
+  msrv:
+    name: MSRV (Rust 1.82)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust 1.82
+        uses: dtolnay/rust-toolchain@1.82.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test core on MSRV
+        run: cargo test --package csv_ingest --all-targets --all-features --locked --no-fail-fast
+
   coverage:
     name: Coverage gate (95% lines)
     runs-on: ubuntu-latest
@@ -79,6 +96,9 @@ jobs:
 
       - name: Test development tools
         run: cargo test --package csv_ingest_tools --all-targets --all-features --locked --no-fail-fast
+
+      - name: Verify crates.io package
+        run: cargo package --package csv_ingest --locked
 
       # ---- Local perf smoke: generate CSV and run bench ----
       - name: Install zstd

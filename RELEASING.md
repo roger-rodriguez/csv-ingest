@@ -10,6 +10,9 @@ Update Rust:
 rustup update stable
 ```
 
+CI must pass on both the declared Rust 1.82 MSRV and the latest stable
+toolchain before release.
+
 ## 1. Update `crates/csv-ingest/Cargo.toml`
 
 ```toml
@@ -28,6 +31,9 @@ cargo doc -p csv_ingest --no-deps --all-features
 ```
 
 ## 3. Package locally
+
+This is the same required package-verification gate run by CI. It must compile
+the packaged artifact successfully without warnings.
 
 ```bash
 cargo package -p csv_ingest --locked
