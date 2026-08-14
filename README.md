@@ -103,15 +103,16 @@ while rdr.read_byte_record(&mut rec).await? {
 
 ### ⚡️ Fast local mode (optional)
 
-For local, uncompressed, UTF‑8 CSVs you control, enable the `fast_local` feature and use `--fast-local` in the bench. This path maps the file, splits by newline per core, and scans with `memchr`, extracting only required fields.
+For local, uncompressed, UTF‑8 CSVs you control, enable the `fast_local` feature and use `--fast-local` in the bench. This path maps the file, splits by newline per core, and scans with `memchr`, validating required-field availability without allocating row records.
 
 Assumptions:
 
-- No embedded newlines inside fields (simple quoting only)
+- Unquoted CSV only: any quote byte is rejected instead of being silently misparsed
+- No embedded newlines inside fields
 - Single‑byte delimiter (default `,`)
 - Header is first line
 
-Use `--verify --limit` to validate on a sample when benchmarking.
+Use `--verify --limit` to validate on a global row sample when benchmarking. Verification hashes every field in row order and produces the same digest regardless of fast-local worker count.
 
 ## 🛠️ CLI (dev helpers)
 
@@ -165,6 +166,20 @@ wc -l data/1b.csv           # expect 1,000,000,001 (includes header)
 - Gzip is typically the bottleneck; prefer zstd or uncompressed for peak throughput
 - Put required columns early; the fast‑local path short‑circuits after the last required column
 - Build with native CPU flags and release optimizations (already configured)
+
+## ✅ Test coverage
+
+CI enforces at least 95% line coverage across the library and at least 90% for each library source file. Development binaries and examples are excluded from the metric because they are benchmark tooling rather than the published parser.
+
+With `cargo-llvm-cov` 0.8.6 or newer installed, run the same gate locally:
+
+```bash
+cargo llvm-cov --all-features --all-targets \
+  --ignore-filename-regex '(^|/)(bin|examples)/' \
+  --fail-under-lines 95 \
+  --fail-under-file-lines 90 \
+  --summary-only
+```
 
 ## 📄 License
 

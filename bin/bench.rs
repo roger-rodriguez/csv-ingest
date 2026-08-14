@@ -68,16 +68,17 @@ async fn main() -> anyhow::Result<()> {
             panic!("Provide --path <file>");
         };
 
-    let summary = if matches.get_flag("verify") {
+    let (summary, crc) = if matches.get_flag("verify") {
         // Run a stricter verification parser that mirrors process_csv_stream but adds checksums
-        verify_and_count(
+        let (summary, crc) = verify_and_count(
             reader,
             &required_refs,
             matches.get_one::<u64>("limit").copied(),
         )
-        .await?
+        .await?;
+        (summary, Some(crc))
     } else {
-        process_csv_stream(reader, &required_refs).await?
+        (process_csv_stream(reader, &required_refs).await?, None)
     };
     let elapsed = start.elapsed().as_secs_f64();
     let rps = (summary.row_count as f64) / elapsed;
@@ -86,10 +87,17 @@ async fn main() -> anyhow::Result<()> {
         .get_one::<PathBuf>("path")
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "(unknown)".to_string());
-    println!(
-        "source={} rows={} headers={:?}\nelapsed={:.1}s rows/sec={:.0}",
-        src, summary.row_count, summary.headers, elapsed, rps
-    );
+    if let Some(digest) = crc {
+        println!(
+            "source={} rows={} headers={:?} crc=0x{digest:08x}\nelapsed={:.1}s rows/sec={:.0}",
+            src, summary.row_count, summary.headers, elapsed, rps
+        );
+    } else {
+        println!(
+            "source={} rows={} headers={:?}\nelapsed={:.1}s rows/sec={:.0}",
+            src, summary.row_count, summary.headers, elapsed, rps
+        );
+    }
     Ok(())
 }
 
@@ -97,7 +105,7 @@ async fn verify_and_count<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     reader: R,
     required_headers: &[&str],
     limit: Option<u64>,
-) -> anyhow::Result<csv_ingest::CsvIngestSummary> {
+) -> anyhow::Result<(csv_ingest::CsvIngestSummary, u32)> {
     use csv_async::AsyncReaderBuilder;
     let mut rdr = AsyncReaderBuilder::new()
         .has_headers(true)
@@ -117,6 +125,16 @@ async fn verify_and_count<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                 .ok_or_else(|| anyhow::anyhow!("Missing required header: '{}'", req_h))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+
+    if limit == Some(0) {
+        return Ok((
+            csv_ingest::CsvIngestSummary {
+                row_count: 0,
+                headers: headers.iter().map(|s| s.to_string()).collect(),
+            },
+            Crc32::new().finalize(),
+        ));
+    }
 
     let mut record = ByteRecord::new();
     let mut row_count: u64 = 0;
@@ -153,9 +171,61 @@ async fn verify_and_count<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
             }
         }
     }
-    let _digest = crc.finalize();
-    Ok(csv_ingest::CsvIngestSummary {
-        row_count: row_count as usize,
-        headers: headers.iter().map(|s| s.to_string()).collect(),
-    })
+    let digest = crc.finalize();
+    Ok((
+        csv_ingest::CsvIngestSummary {
+            row_count: row_count as usize,
+            headers: headers.iter().map(|s| s.to_string()).collect(),
+        },
+        digest,
+    ))
+}
+
+#[cfg(all(test, feature = "fast_local"))]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn streaming_and_fast_verification_match() {
+        let contents = b"sku,col1,col2\r\nA,1,x\r\nB,2,y\r\nC,3,z\r\nD,4,w";
+        let mut file = NamedTempFile::new().expect("create fixture");
+        file.write_all(contents).expect("write fixture");
+
+        let reader = tokio::fs::File::open(file.path())
+            .await
+            .expect("open streaming fixture");
+        let (streaming_summary, streaming_crc) = verify_and_count(reader, &["sku"], Some(3))
+            .await
+            .expect("streaming verification");
+        let (fast_summary, fast_crc) =
+            csv_ingest::fast_local_process(file.path(), b',', b'\n', &["sku"], true, Some(3))
+                .expect("fast verification");
+
+        assert_eq!(streaming_summary.row_count, fast_summary.row_count);
+        assert_eq!(streaming_summary.headers, fast_summary.headers);
+        assert_eq!(Some(streaming_crc), fast_crc);
+    }
+
+    #[tokio::test]
+    async fn zero_limit_verifies_zero_rows_in_both_paths() {
+        let contents = b"sku,value\nA,1\n";
+        let mut file = NamedTempFile::new().expect("create fixture");
+        file.write_all(contents).expect("write fixture");
+
+        let reader = tokio::fs::File::open(file.path())
+            .await
+            .expect("open streaming fixture");
+        let (streaming_summary, streaming_crc) = verify_and_count(reader, &["sku"], Some(0))
+            .await
+            .expect("streaming verification");
+        let (fast_summary, fast_crc) =
+            csv_ingest::fast_local_process(file.path(), b',', b'\n', &["sku"], true, Some(0))
+                .expect("fast verification");
+
+        assert_eq!(streaming_summary.row_count, 0);
+        assert_eq!(fast_summary.row_count, 0);
+        assert_eq!(Some(streaming_crc), fast_crc);
+    }
 }

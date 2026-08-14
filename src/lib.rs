@@ -89,3 +89,33 @@ where
         headers: headers.iter().map(|s| s.to_string()).collect(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[tokio::test]
+    async fn reports_a_missing_required_header() {
+        let error = process_csv_stream(Cursor::new(b"sku,value\nA,1\n"), &["missing"])
+            .await
+            .expect_err("missing header must fail");
+
+        assert!(matches!(
+            error,
+            CsvIngestError::MissingHeader(header) if header == "missing"
+        ));
+    }
+
+    #[tokio::test]
+    async fn reports_a_row_missing_a_required_field() {
+        let error = process_csv_stream(Cursor::new(b"sku,value\nA\n"), &["value"])
+            .await
+            .expect_err("short row must fail");
+
+        assert!(matches!(
+            error,
+            CsvIngestError::MissingHeader(header) if header == "value"
+        ));
+    }
+}
