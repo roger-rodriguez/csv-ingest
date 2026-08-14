@@ -14,6 +14,7 @@ mod fast;
 mod io;
 mod options;
 
+pub use crate::codec::{DecodePolicy, TranscodingError};
 #[cfg(feature = "fast_local")]
 pub use crate::fast::fast_local_process;
 pub use crate::io::{build_csv_reader, reader_from_path, CsvMeta};
