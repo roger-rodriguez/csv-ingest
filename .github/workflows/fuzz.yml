@@ -1,0 +1,60 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 6 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-fast-local
+  cancel-in-progress: false
+
+jobs:
+  fast-local:
+    name: Fast-local fuzz smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_FUZZ_VERSION: 0.13.2
+      FUZZ_SECONDS: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version "${CARGO_FUZZ_VERSION}" --locked
+
+      - name: Build fast-local fuzz target
+        run: cargo fuzz build --fuzz-dir tools/csv-ingest-fuzz fast_local
+
+      - name: Prepare writable smoke corpus
+        run: mkdir -p tools/csv-ingest-fuzz/target/smoke-corpus
+
+      - name: Run bounded fast-local fuzz smoke
+        run: >-
+          cargo fuzz run
+          --fuzz-dir tools/csv-ingest-fuzz
+          fast_local
+          tools/csv-ingest-fuzz/target/smoke-corpus
+          tools/csv-ingest-fuzz/corpus/fast_local
+          --
+          -max_total_time=${FUZZ_SECONDS}
+          -timeout=10
+          -max_len=1048576
+
+      - name: Upload fuzz artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-local-fuzz-artifacts-${{ github.sha }}
+          path: tools/csv-ingest-fuzz/artifacts
+          if-no-files-found: ignore

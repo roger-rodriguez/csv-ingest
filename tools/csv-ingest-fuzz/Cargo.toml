@@ -1,0 +1,25 @@
+[package]
+name = "csv-ingest-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+csv_ingest = { path = "../../crates/csv-ingest", features = ["fast_local"] }
+libfuzzer-sys = "0.4.13"
+tempfile = "3"
+
+[[bin]]
+name = "fast_local"
+path = "fuzz_targets/fast_local.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+resolver = "2"
