@@ -20,6 +20,8 @@ jobs:
     env:
       CARGO_FUZZ_VERSION: 0.13.2
       FUZZ_SECONDS: 300
+      # Keep scheduled artifacts portable across hosted runner CPUs.
+      RUSTFLAGS: ""
 
     steps:
       - name: Checkout
