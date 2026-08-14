@@ -26,7 +26,8 @@ If you need to parse from a remote source, construct an `AsyncRead` in your app 
 ```rust
 // pseudo
 let (reader, meta) = build_csv_reader(remote_async_read, CsvMeta { content_type, content_encoding, name_hint, ..Default::default() });
-let summary = process_csv_stream(reader, &["sku"]).await?;
+let options = CsvOptions::default();
+let summary = process_csv_stream(reader, &["sku"], &options).await?;
 ```
 
 ```rs
@@ -34,20 +35,21 @@ let summary = process_csv_stream(reader, &["sku"]).await?;
 async fn process_csv_stream<R: AsyncRead + Unpin + Send + 'static>(
   reader: R,
   required_headers: &[&str],
-) -> Result<CsvIngestSummary, anyhow::Error>;
+  options: &CsvOptions,
+) -> CsvResult<CsvIngestSummary>;
 ```
 
 Minimal example (local file):
 
 ```rs
-use csv_ingest::{reader_from_path, process_csv_stream};
+use csv_ingest::{reader_from_path, process_csv_stream, CsvOptions};
 use std::path::Path;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let (reader, _meta) = reader_from_path(Path::new("./data/sample.csv.gz")).await?;
     let required = ["sku"]; // repeat in the slice for multiple required headers
-    let summary = process_csv_stream(reader, &required).await?;
+    let summary = process_csv_stream(reader, &required, &CsvOptions::default()).await?;
     println!("rows={}, headers={:?}", summary.row_count, summary.headers);
     Ok(())
 }
@@ -68,6 +70,22 @@ async fn main() -> anyhow::Result<()> {
 - Fast‑local (feature `fast_local`): internal path optimized for local uncompressed CSVs
   - Library returns the same `CsvIngestSummary` (and the bench can print an optional CRC for verification)
   - Assumptions are listed below; use the streaming API when those don’t hold
+
+### Shared CSV options
+
+`CsvOptions` is the parsing contract for both streaming and fast-local parsing. Its defaults are:
+
+- comma delimiter
+- `\r`, `\n`, or `\r\n` record terminators
+- first record is a header
+- fixed-width rows (ragged rows are rejected)
+- standard double-quote handling with no backslash escape
+- no whitespace trimming
+- a leading UTF-8 BOM is stripped
+
+Set `headers` to `CsvHeaderMode::Absent` to count every record as data; named required-header validation is then unavailable. Set `flexible` to `true` to permit ragged rows, although rows must still contain every required column. Invalid delimiter, quote, escape, and terminator combinations return `CsvIngestError::UnsupportedOptions` before parsing.
+
+Compression, content type, filename hints, and character transcoding remain separate transport concerns in `CsvMeta`.
 
 ### 🌊 Streaming (recommended default)
 
@@ -107,10 +125,10 @@ For local, uncompressed, UTF‑8 CSVs you control, enable the `fast_local` featu
 
 Assumptions:
 
-- Unquoted CSV only: any quote byte is rejected instead of being silently misparsed
+- Quoted records are unsupported: with quoting enabled, the configured quote byte is rejected instead of being silently misparsed
 - No embedded newlines inside fields
-- Single‑byte delimiter (default `,`)
-- Header is first line
+- Single-byte delimiter and terminator configuration
+- Named required columns require `CsvHeaderMode::Present`
 
 Use `--verify --limit` to validate on a global row sample when benchmarking. Verification hashes every field in row order and produces the same digest regardless of fast-local worker count.
 
@@ -164,7 +182,7 @@ wc -l data/1b.csv           # expect 1,000,000,001 (includes header)
 ## 🧪 Notes on performance
 
 - Gzip is typically the bottleneck; prefer zstd or uncompressed for peak throughput
-- Put required columns early; the fast‑local path short‑circuits after the last required column
+- With flexible rows and verification disabled, put required columns early so fast-local can stop field scanning after the last required column
 - Build with native CPU flags and release optimizations (already configured)
 
 ## ✅ Test coverage
