@@ -1,8 +1,8 @@
 use clap::{Arg, ArgAction, Command};
 use crc32fast::Hasher as Crc32;
-use csv_async::ByteRecord;
 use csv_ingest::{
-    process_csv_stream, reader_from_path, CsvHeaderMode, CsvOptions, CsvTerminator, CsvTrim,
+    reader_from_path, summarize_csv_stream, ByteRecord, CsvHeaderMode, CsvOptions, CsvTerminator,
+    CsvTrim,
 };
 #[cfg(feature = "fast_local")]
 use std::path::Path;
@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
         };
 
     let (summary, crc) = if matches.get_flag("verify") {
-        // Run a stricter verification parser that mirrors process_csv_stream but adds checksums
+        // Run a stricter verification parser that mirrors summarize_csv_stream but adds checksums
         let (summary, crc) = verify_and_count(
             reader,
             &required_refs,
@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
         (summary, Some(crc))
     } else {
         (
-            process_csv_stream(reader, &required_refs, &csv_options).await?,
+            summarize_csv_stream(reader, &required_refs, &csv_options).await?,
             None,
         )
     };

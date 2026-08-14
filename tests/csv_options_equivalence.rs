@@ -1,7 +1,7 @@
 #![cfg(feature = "fast_local")]
 
 use csv_ingest::{
-    fast_local_process, process_csv_stream, CsvHeaderMode, CsvOptions, CsvTerminator, CsvTrim,
+    fast_local_process, summarize_csv_stream, CsvHeaderMode, CsvOptions, CsvTerminator, CsvTrim,
 };
 use std::io::{Cursor, Write};
 use tempfile::NamedTempFile;
@@ -12,7 +12,7 @@ async fn parse_both(
     options: &CsvOptions,
 ) -> anyhow::Result<(csv_ingest::CsvIngestSummary, csv_ingest::CsvIngestSummary)> {
     let streaming =
-        process_csv_stream(Cursor::new(contents.to_vec()), required_headers, options).await?;
+        summarize_csv_stream(Cursor::new(contents.to_vec()), required_headers, options).await?;
     let mut file = NamedTempFile::new()?;
     file.write_all(contents)?;
     let (fast, _) = fast_local_process(file.path(), required_headers, options, false, None)?;
@@ -40,7 +40,7 @@ async fn empty_input_behavior_matches() -> anyhow::Result<()> {
     assert_eq!(streaming, fast);
 
     let streaming =
-        process_csv_stream(Cursor::new(Vec::new()), &["sku"], &CsvOptions::default()).await;
+        summarize_csv_stream(Cursor::new(Vec::new()), &["sku"], &CsvOptions::default()).await;
     let file = NamedTempFile::new()?;
     let fast = fast_local_process(file.path(), &["sku"], &CsvOptions::default(), false, None);
     assert!(streaming.is_err());
@@ -73,7 +73,7 @@ async fn custom_dialect_and_headerless_mode_match() -> anyhow::Result<()> {
 #[tokio::test]
 async fn strict_and_flexible_row_width_behavior_matches() -> anyhow::Result<()> {
     let contents = b"sku,value\nA\n";
-    let streaming = process_csv_stream(
+    let streaming = summarize_csv_stream(
         Cursor::new(contents.to_vec()),
         &["sku"],
         &CsvOptions::default(),
@@ -97,7 +97,7 @@ async fn strict_and_flexible_row_width_behavior_matches() -> anyhow::Result<()> 
 #[tokio::test]
 async fn fast_local_rejects_quoted_data_instead_of_disagreeing() -> anyhow::Result<()> {
     let contents = b"sku,value\nA,\"quoted,value\"\n";
-    let streaming = process_csv_stream(
+    let streaming = summarize_csv_stream(
         Cursor::new(contents.to_vec()),
         &["sku"],
         &CsvOptions::default(),

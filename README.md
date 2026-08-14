@@ -21,18 +21,23 @@ Rust Library for parsing CSV files from local files or any async source (`AsyncR
 cargo add csv_ingest
 ```
 
-If you need to parse from a remote source, construct an `AsyncRead` in your app (e.g., a `reqwest` byte stream) and pass it to `build_csv_reader`/`process_csv_stream`.
+If you need to parse from a remote source, construct an `AsyncRead` in your app
+(for example, a `reqwest` byte stream), normalize its transport with
+`build_csv_reader`, and give the reader to `CsvParser`.
 
 ```rust
 // pseudo
 let (reader, meta) = build_csv_reader(remote_async_read, CsvMeta { content_type, content_encoding, name_hint, ..Default::default() })?;
-let options = CsvOptions::default();
-let summary = process_csv_stream(reader, &["sku"], &options).await?;
+let mut parser = CsvParser::from_reader(reader, &["sku"], &CsvOptions::default()).await?;
+let sku_index = parser.required_indices()[0];
+while let Some(record) = parser.next_record().await? {
+    let sku = record.get(sku_index).expect("validated field");
+}
 ```
 
 ```rs
-// Stream & validate; returns headers + row_count
-async fn process_csv_stream<R: AsyncRead + Unpin + Send + 'static>(
+// Summarize & validate; returns headers + row_count
+async fn summarize_csv_stream<R: AsyncRead + Unpin + Send>(
   reader: R,
   required_headers: &[&str],
   options: &CsvOptions,
@@ -42,14 +47,17 @@ async fn process_csv_stream<R: AsyncRead + Unpin + Send + 'static>(
 Minimal example (local file):
 
 ```rs
-use csv_ingest::{reader_from_path, process_csv_stream, CsvOptions};
+use csv_ingest::{summarize_csv_path, CsvOptions};
 use std::path::Path;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (reader, _meta) = reader_from_path(Path::new("./data/sample.csv.gz")).await?;
     let required = ["sku"]; // repeat in the slice for multiple required headers
-    let summary = process_csv_stream(reader, &required, &CsvOptions::default()).await?;
+    let (summary, _meta) = summarize_csv_path(
+        Path::new("./data/sample.csv.gz"),
+        &required,
+        &CsvOptions::default(),
+    ).await?;
     println!("rows={}, headers={:?}", summary.row_count, summary.headers);
     Ok(())
 }
@@ -59,10 +67,15 @@ async fn main() -> anyhow::Result<()> {
 
 ### 📦 What this library returns (data shape)
 
-- CsvIngestSummary: returned by `process_csv_stream(...)`
+- `CsvParser`: reads records from a path or any `AsyncRead`
+  - `headers()` exposes the byte header record once
+  - `header_index(...)` and `required_indices()` expose one-time column resolution
+  - `next_record()` reuses parser-owned storage
+  - `read_record(...)` reuses a caller-owned `ByteRecord`
+- `CsvIngestSummary`: returned by `summarize_csv_stream(...)` or `summarize_csv_path(...)`
   - `row_count: usize`
   - `headers: Vec<String>` (exact header strings from the first row)
-- Streaming rows (when you iterate): `csv_async::ByteRecord`
+- Streaming rows: `csv_ingest::ByteRecord`
   - Access by index: `record.get(idx) -> Option<&[u8]>`
   - Decode only if needed: `std::str::from_utf8(bytes)` or parse to numbers as required
   - You typically resolve header indices once, then read those fields per row
@@ -109,30 +122,26 @@ let meta = CsvMeta {
 
 ### 🌊 Streaming (recommended default)
 
-Works for local files, gzip/zstd, and remote streams (HTTP via reqwest, etc.). You provide an `AsyncRead` and process `ByteRecord`s, decoding only when needed.
+Works for local files, gzip/zstd, and remote streams (HTTP via reqwest, etc.).
+`CsvParser` resolves headers and required columns once, then reuses record storage
+throughout the hot loop. Fields remain bytes unless you choose to decode them.
 
 ```rs
-use csv_ingest::reader_from_path;
-use csv_async::{AsyncReaderBuilder, ByteRecord};
+use csv_ingest::{ByteRecord, CsvOptions, CsvParser};
 use std::path::Path;
 
 # #[tokio::main]
 # async fn main() -> anyhow::Result<()> {
-let (reader, _meta) = reader_from_path(Path::new("data/your.csv.gz")).await?;
-let mut rdr = AsyncReaderBuilder::new()
-    .has_headers(true)
-    .buffer_capacity(1 << 20)
-    .create_reader(reader);
-
-let headers = rdr.headers().await?.clone();
-let required = ["sku", "col1", "col2"];
-let idxs: Vec<usize> = required.iter()
-    .map(|h| headers.iter().position(|x| x == *h).ok_or_else(|| anyhow::anyhow!("missing {h}")))
-    .collect::<anyhow::Result<_>>()?;
+let (mut parser, _meta) = CsvParser::from_path(
+    Path::new("data/your.csv.gz"),
+    &["sku", "col1", "col2"],
+    &CsvOptions::default(),
+).await?;
+let sku_index = parser.header_index("sku").expect("required header");
 
 let mut rec = ByteRecord::new();
-while rdr.read_byte_record(&mut rec).await? {
-    let sku = rec.get(idxs[0]).unwrap(); // &[u8]
+while parser.read_record(&mut rec).await? {
+    let sku = rec.get(sku_index).expect("validated field"); // &[u8]
     // decode only if needed:
     // let sku_str = std::str::from_utf8(sku)?;
 }

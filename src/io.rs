@@ -148,7 +148,7 @@ fn detect_compression(meta: &CsvMeta) -> CsvResult<Option<Compression>> {
 pub fn build_csv_reader<R>(
     raw: R,
     meta: CsvMeta,
-) -> CsvResult<(impl AsyncRead + Unpin + Send, CsvMeta)>
+) -> CsvResult<(Box<dyn AsyncRead + Unpin + Send>, CsvMeta)>
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
@@ -177,7 +177,9 @@ where
 }
 
 /// Build a reader from a local file path (lightweight meta from extension).
-pub async fn reader_from_path(path: &Path) -> CsvResult<(impl AsyncRead + Unpin + Send, CsvMeta)> {
+pub async fn reader_from_path(
+    path: &Path,
+) -> CsvResult<(Box<dyn AsyncRead + Unpin + Send>, CsvMeta)> {
     let file = File::open(path).await?;
     let name = path
         .file_name()
