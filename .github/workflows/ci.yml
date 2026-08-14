@@ -3,12 +3,45 @@ name: CI
 on:
   push:
   pull_request:
+  merge_group:
   workflow_dispatch:
   schedule:
     # Nightly at 06:00 UTC (2am ET)
     - cron: "0 6 * * *"
 
 jobs:
+  coverage:
+    name: Coverage gate (95% lines)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust with coverage tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.8.6
+          fallback: none
+
+      - name: Enforce library coverage
+        run: >-
+          cargo llvm-cov
+          --all-features
+          --all-targets
+          --ignore-filename-regex '(^|/)(bin|examples)/'
+          --fail-under-lines 95
+          --fail-under-file-lines 90
+          --summary-only
+
   build-test-bench:
     runs-on: ubuntu-latest
 

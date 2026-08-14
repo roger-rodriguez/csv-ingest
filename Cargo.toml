@@ -21,7 +21,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-fast_local = ["memmap2", "memchr", "num_cpus"]
+fast_local = ["memmap2", "memchr"]
 
 [dependencies]
 anyhow = "1"
@@ -41,7 +41,6 @@ clap = { version = "4" }
 crc32fast = "1"
 memmap2 = { version = "0.9", optional = true }
 memchr = { version = "2.7", optional = true }
-num_cpus = { version = "1.16", optional = true }
 thiserror = { version = "2.0.16" }
 
 

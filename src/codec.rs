@@ -64,3 +64,70 @@ impl Decoder for Transcoder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_returns_none_for_empty_input() {
+        let mut transcoder = Transcoder::new(encoding_rs::WINDOWS_1252);
+        let mut input = BytesMut::new();
+
+        assert!(transcoder.decode(&mut input).expect("decode").is_none());
+        assert!(transcoder
+            .decode_eof(&mut input)
+            .expect("decode EOF")
+            .is_none());
+    }
+
+    #[test]
+    fn decode_transcodes_windows_1252_to_utf8() {
+        let mut transcoder = Transcoder::new(encoding_rs::WINDOWS_1252);
+        let mut input = BytesMut::from(&b"caf\xe9"[..]);
+
+        let output = transcoder
+            .decode(&mut input)
+            .expect("decode")
+            .expect("decoded bytes");
+
+        assert_eq!(output, "café");
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn decode_preserves_state_across_split_multibyte_input() {
+        let mut transcoder = Transcoder::new(encoding_rs::SHIFT_JIS);
+        let mut first = BytesMut::from(&[0x82][..]);
+        let first_output = transcoder
+            .decode(&mut first)
+            .expect("decode first byte")
+            .unwrap_or_default();
+
+        let mut second = BytesMut::from(&[0xa0][..]);
+        let second_output = transcoder
+            .decode(&mut second)
+            .expect("decode second byte")
+            .unwrap_or_default();
+
+        let mut output = first_output.to_vec();
+        output.extend_from_slice(&second_output);
+        assert_eq!(output, "あ".as_bytes());
+        assert!(first.is_empty());
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn decode_eof_flushes_non_utf8_input() {
+        let mut transcoder = Transcoder::new(encoding_rs::UTF_16LE);
+        let mut input = BytesMut::from(&[b'H', 0, b'i', 0][..]);
+
+        let output = transcoder
+            .decode_eof(&mut input)
+            .expect("decode EOF")
+            .expect("decoded bytes");
+
+        assert_eq!(output, "Hi");
+        assert!(input.is_empty());
+    }
+}

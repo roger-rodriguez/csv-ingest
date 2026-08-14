@@ -109,3 +109,161 @@ pub async fn reader_from_path(path: &Path) -> CsvResult<(impl AsyncRead + Unpin 
 
     Ok(build_csv_reader(file, meta))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_compression::tokio::write::{GzipEncoder, ZstdEncoder};
+    use std::io::Cursor;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = GzipEncoder::new(Vec::new());
+        encoder.write_all(bytes).await.expect("write gzip input");
+        encoder.shutdown().await.expect("finish gzip stream");
+        encoder.into_inner()
+    }
+
+    async fn zstd(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = ZstdEncoder::new(Vec::new());
+        encoder.write_all(bytes).await.expect("write zstd input");
+        encoder.shutdown().await.expect("finish zstd stream");
+        encoder.into_inner()
+    }
+
+    async fn decode(raw: Vec<u8>, meta: CsvMeta) -> (Vec<u8>, CsvMeta) {
+        let (mut reader, normalized) = build_csv_reader(Cursor::new(raw), meta);
+        let mut decoded = Vec::new();
+        reader
+            .read_to_end(&mut decoded)
+            .await
+            .expect("read decoded");
+        (decoded, normalized)
+    }
+
+    #[tokio::test]
+    async fn plain_utf8_passes_through_and_preserves_metadata() {
+        let meta = CsvMeta {
+            content_type: "text/csv".into(),
+            name_hint: "rows.csv".into(),
+            ..Default::default()
+        };
+
+        let (decoded, normalized) = decode(b"sku\nA\n".to_vec(), meta).await;
+
+        assert_eq!(decoded, b"sku\nA\n");
+        assert_eq!(normalized.content_type, "text/csv");
+        assert_eq!(normalized.name_hint, "rows.csv");
+    }
+
+    #[tokio::test]
+    async fn gzip_is_decoded_from_content_encoding() {
+        let expected = b"sku,value\nA,1\n";
+        let compressed = gzip(expected).await;
+        let meta = CsvMeta {
+            content_encoding: "gzip".into(),
+            ..Default::default()
+        };
+
+        let (decoded, _) = decode(compressed, meta).await;
+
+        assert_eq!(decoded, expected);
+    }
+
+    #[tokio::test]
+    async fn gzip_is_decoded_from_content_type() {
+        let expected = b"sku\nA\n";
+        let compressed = gzip(expected).await;
+        let meta = CsvMeta {
+            content_type: "application/x-gzip".into(),
+            ..Default::default()
+        };
+
+        let (decoded, _) = decode(compressed, meta).await;
+
+        assert_eq!(decoded, expected);
+    }
+
+    #[tokio::test]
+    async fn zstd_is_decoded_from_content_type() {
+        let expected = b"sku,value\nA,1\n";
+        let compressed = zstd(expected).await;
+        let meta = CsvMeta {
+            content_type: "application/zstd".into(),
+            ..Default::default()
+        };
+
+        let (decoded, _) = decode(compressed, meta).await;
+
+        assert_eq!(decoded, expected);
+    }
+
+    #[tokio::test]
+    async fn filename_extensions_select_compression() {
+        let expected = b"sku\nA\n";
+        let gzip_meta = CsvMeta {
+            name_hint: "rows.csv.gz".into(),
+            ..Default::default()
+        };
+        let zstd_meta = CsvMeta {
+            name_hint: "rows.csv.zst".into(),
+            ..Default::default()
+        };
+
+        let (gzip_decoded, _) = decode(gzip(expected).await, gzip_meta).await;
+        let (zstd_decoded, _) = decode(zstd(expected).await, zstd_meta).await;
+
+        assert_eq!(gzip_decoded, expected);
+        assert_eq!(zstd_decoded, expected);
+    }
+
+    #[tokio::test]
+    async fn non_utf8_input_is_transcoded() {
+        let meta = CsvMeta {
+            charset: encoding_rs::WINDOWS_1252,
+            ..Default::default()
+        };
+
+        let (decoded, _) = decode(b"name\ncaf\xe9\n".to_vec(), meta).await;
+
+        assert_eq!(decoded, "name\ncafé\n".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn reader_from_path_sets_plain_and_zstd_metadata() {
+        let plain = tempfile::Builder::new()
+            .suffix(".csv")
+            .tempfile()
+            .expect("create plain fixture");
+        std::fs::write(plain.path(), b"sku\nA\n").expect("write plain fixture");
+
+        let zstd_file = tempfile::Builder::new()
+            .suffix(".zst")
+            .tempfile()
+            .expect("create zstd fixture");
+        std::fs::write(zstd_file.path(), zstd(b"sku\nA\n").await).expect("write zstd fixture");
+
+        let (mut plain_reader, plain_meta) = reader_from_path(plain.path())
+            .await
+            .expect("open plain fixture");
+        let mut plain_decoded = Vec::new();
+        plain_reader
+            .read_to_end(&mut plain_decoded)
+            .await
+            .expect("read plain fixture");
+
+        let (mut zstd_reader, zstd_meta) = reader_from_path(zstd_file.path())
+            .await
+            .expect("open zstd fixture");
+        let mut zstd_decoded = Vec::new();
+        zstd_reader
+            .read_to_end(&mut zstd_decoded)
+            .await
+            .expect("read zstd fixture");
+
+        assert_eq!(plain_decoded, b"sku\nA\n");
+        assert_eq!(plain_meta.content_type, "text/csv");
+        assert_eq!(zstd_decoded, b"sku\nA\n");
+        assert_eq!(zstd_meta.content_encoding, "zstd");
+    }
+}
