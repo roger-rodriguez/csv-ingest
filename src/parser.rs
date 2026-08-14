@@ -1,6 +1,6 @@
 use crate::{
-    reader_from_path, CsvHeaderMode, CsvIngestError, CsvIngestSummary, CsvMeta, CsvOptions,
-    CsvResult,
+    reader_from_path, BoxedCsvReader, CsvHeaderMode, CsvIngestError, CsvIngestSummary, CsvMeta,
+    CsvOptions, CsvResult,
 };
 use csv_async::{AsyncReader, AsyncReaderBuilder};
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ pub struct CsvParser<R> {
     required_indices: Vec<usize>,
     required_headers: Vec<String>,
     record: crate::ByteRecord,
-    records_read: usize,
+    records_read: u64,
 }
 
 impl<R> CsvParser<R>
@@ -27,13 +27,16 @@ where
     R: AsyncRead + Unpin + Send,
 {
     /// Construct a parser over an arbitrary asynchronous byte reader.
+    ///
+    /// `Send + Unpin` are required by `csv_async`'s Tokio reader backend. The
+    /// reader does not need to be `'static`, so borrowed readers are accepted.
     pub async fn from_reader(
         reader: R,
         required_headers: &[&str],
         options: &CsvOptions,
     ) -> CsvResult<Self> {
         if options.headers == CsvHeaderMode::Absent && !required_headers.is_empty() {
-            return Err(CsvIngestError::UnsupportedOptions(
+            return Err(CsvIngestError::UnsupportedDialect(
                 "required headers cannot be validated when headers are absent".to_string(),
             ));
         }
@@ -92,7 +95,7 @@ where
     }
 
     /// Return the number of data records read so far.
-    pub fn records_read(&self) -> usize {
+    pub fn records_read(&self) -> u64 {
         self.records_read
     }
 
@@ -130,7 +133,7 @@ where
     }
 }
 
-impl CsvParser<Box<dyn AsyncRead + Unpin + Send>> {
+impl CsvParser<BoxedCsvReader<'static>> {
     /// Construct a parser from a local path using the same transport and CSV options.
     pub async fn from_path(
         path: &Path,
@@ -148,7 +151,7 @@ async fn read_validated_record<R>(
     record: &mut crate::ByteRecord,
     required_indices: &[usize],
     required_headers: &[String],
-    records_read: &mut usize,
+    records_read: &mut u64,
 ) -> CsvResult<bool>
 where
     R: AsyncRead + Unpin + Send,
@@ -279,7 +282,8 @@ mod tests {
 
         assert_eq!(second.get(0), Some(&b"B"[..]));
         assert_eq!(second.as_slice().as_ptr(), first_pointer);
-        assert_eq!(parser.records_read(), 2);
+        let records_read: u64 = parser.records_read();
+        assert_eq!(records_read, 2);
         assert!(parser.next_record().await.expect("read EOF").is_none());
     }
 

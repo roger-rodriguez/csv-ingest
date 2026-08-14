@@ -8,6 +8,12 @@ use tokio_util::io::StreamReader;
 
 use crate::codec::Transcoder;
 
+/// Type-erased asynchronous reader returned by the transport helpers.
+///
+/// The lifetime permits readers that borrow their input. `Send + Unpin` are
+/// retained because the Tokio backend in `csv_async` requires both bounds.
+pub type BoxedCsvReader<'a> = Box<dyn AsyncRead + Unpin + Send + 'a>;
+
 #[derive(Debug, Clone)]
 pub struct CsvMeta {
     /// e.g. "application/gzip" or "text/csv"
@@ -145,26 +151,23 @@ fn detect_compression(meta: &CsvMeta) -> CsvResult<Option<Compression>> {
 /// Compression signals are evaluated in this order: `Content-Encoding`,
 /// compression-specific `Content-Type`, then filename extension. Gzip/zstd
 /// disagreements and unsupported or stacked content encodings return an error.
-pub fn build_csv_reader<R>(
-    raw: R,
-    meta: CsvMeta,
-) -> CsvResult<(Box<dyn AsyncRead + Unpin + Send>, CsvMeta)>
+pub fn build_csv_reader<'a, R>(raw: R, meta: CsvMeta) -> CsvResult<(BoxedCsvReader<'a>, CsvMeta)>
 where
-    R: AsyncRead + Unpin + Send + 'static,
+    R: AsyncRead + Unpin + Send + 'a,
 {
     let normalized_meta = meta.clone();
     let compression = detect_compression(&meta)?;
 
     // Use a larger buffer for fewer syscalls (1 MiB)
     let buf = BufReader::with_capacity(1 << 20, raw);
-    let decompressed: Box<dyn AsyncRead + Unpin + Send> = match compression {
+    let decompressed: BoxedCsvReader<'a> = match compression {
         Some(Compression::Gzip) => Box::new(GzipDecoder::new(buf)),
         Some(Compression::Zstd) => Box::new(ZstdDecoder::new(buf)),
         None => Box::new(buf),
     };
 
     // 2) transcoding to UTF-8 only when charset != UTF-8 to avoid extra copies
-    let stream_reader: Box<dyn AsyncRead + Unpin + Send> = if meta.charset == encoding_rs::UTF_8 {
+    let stream_reader: BoxedCsvReader<'a> = if meta.charset == encoding_rs::UTF_8 {
         // No transcoding needed; pass through as bytes
         Box::new(decompressed)
     } else {
@@ -177,9 +180,7 @@ where
 }
 
 /// Build a reader from a local file path (lightweight meta from extension).
-pub async fn reader_from_path(
-    path: &Path,
-) -> CsvResult<(Box<dyn AsyncRead + Unpin + Send>, CsvMeta)> {
+pub async fn reader_from_path(path: &Path) -> CsvResult<(BoxedCsvReader<'static>, CsvMeta)> {
     let file = File::open(path).await?;
     let name = path
         .file_name()
@@ -479,8 +480,8 @@ mod tests {
         let error = try_decode(vec![0x82, 0x20], meta)
             .await
             .expect_err("malformed input must fail");
-        let CsvIngestError::Io(error) = error else {
-            panic!("expected I/O error");
+        let CsvIngestError::InvalidEncoding(error) = error else {
+            panic!("expected invalid encoding error");
         };
         let typed = error
             .get_ref()
@@ -515,8 +516,8 @@ mod tests {
         let error = try_decode(vec![0x82], meta)
             .await
             .expect_err("incomplete trailing sequence must fail");
-        let CsvIngestError::Io(error) = error else {
-            panic!("expected I/O error");
+        let CsvIngestError::InvalidEncoding(error) = error else {
+            panic!("expected invalid encoding error");
         };
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);

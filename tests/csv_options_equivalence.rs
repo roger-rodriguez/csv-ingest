@@ -1,7 +1,8 @@
 #![cfg(feature = "fast_local")]
 
 use csv_ingest::{
-    fast_local_process, summarize_csv_stream, CsvHeaderMode, CsvOptions, CsvTerminator, CsvTrim,
+    fast_local_process, summarize_csv_stream, CsvHeaderMode, CsvIngestError, CsvOptions, CsvResult,
+    CsvTerminator, CsvTrim,
 };
 use std::io::{Cursor, Write};
 use tempfile::NamedTempFile;
@@ -43,8 +44,14 @@ async fn empty_input_behavior_matches() -> anyhow::Result<()> {
         summarize_csv_stream(Cursor::new(Vec::new()), &["sku"], &CsvOptions::default()).await;
     let file = NamedTempFile::new()?;
     let fast = fast_local_process(file.path(), &["sku"], &CsvOptions::default(), false, None);
-    assert!(streaming.is_err());
-    assert!(fast.is_err());
+    assert!(matches!(
+        streaming,
+        Err(CsvIngestError::MissingHeader(header)) if header == "sku"
+    ));
+    assert!(matches!(
+        fast,
+        Err(CsvIngestError::MissingHeader(header)) if header == "sku"
+    ));
     Ok(())
 }
 
@@ -82,8 +89,8 @@ async fn strict_and_flexible_row_width_behavior_matches() -> anyhow::Result<()> 
     let mut file = NamedTempFile::new()?;
     file.write_all(contents)?;
     let fast = fast_local_process(file.path(), &["sku"], &CsvOptions::default(), false, None);
-    assert!(streaming.is_err());
-    assert!(fast.is_err());
+    assert!(matches!(streaming, Err(CsvIngestError::RaggedRow { .. })));
+    assert!(matches!(fast, Err(CsvIngestError::RaggedRow { .. })));
 
     let flexible = CsvOptions {
         flexible: true,
@@ -107,8 +114,12 @@ async fn fast_local_rejects_quoted_data_instead_of_disagreeing() -> anyhow::Resu
 
     let mut file = NamedTempFile::new()?;
     file.write_all(contents)?;
-    let error = fast_local_process(file.path(), &["sku"], &CsvOptions::default(), false, None)
-        .expect_err("fast-local quoted input must fail explicitly");
-    assert!(error.to_string().contains("only unquoted CSV"));
+    let result: CsvResult<_> =
+        fast_local_process(file.path(), &["sku"], &CsvOptions::default(), false, None);
+    assert!(matches!(
+        result,
+        Err(CsvIngestError::UnsupportedDialect(message))
+            if message.contains("only unquoted CSV")
+    ));
     Ok(())
 }
