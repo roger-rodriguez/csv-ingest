@@ -209,18 +209,6 @@ pub async fn summarize_csv_path(
     Ok((finish_summary(parser).await?, meta))
 }
 
-/// Compatibility alias for [`summarize_csv_stream`].
-pub async fn process_csv_stream<R>(
-    reader: R,
-    required_headers: &[&str],
-    options: &CsvOptions,
-) -> CsvResult<CsvIngestSummary>
-where
-    R: AsyncRead + Unpin + Send,
-{
-    summarize_csv_stream(reader, required_headers, options).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,16 +372,7 @@ mod tests {
         let (path_summary, _) = summarize_csv_path(file.path(), &["sku"], &CsvOptions::default())
             .await
             .expect("summarize path");
-        let compatibility_summary = process_csv_stream(
-            Cursor::new(b"sku,value\nA,1\nB,2\n"),
-            &["sku"],
-            &CsvOptions::default(),
-        )
-        .await
-        .expect("summarize through compatibility alias");
-
         assert_eq!(summary, path_summary);
-        assert_eq!(summary, compatibility_summary);
         assert_eq!(summary.row_count, 2);
         assert_eq!(summary.headers, ["sku", "value"]);
     }

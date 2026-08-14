@@ -20,7 +20,7 @@ pub use crate::codec::{DecodePolicy, TranscodingError};
 pub use crate::fast::fast_local_process;
 pub use crate::io::{build_csv_reader, reader_from_path, CsvMeta};
 pub use crate::options::{CsvHeaderMode, CsvOptions, CsvTerminator, CsvTrim};
-pub use crate::parser::{process_csv_stream, summarize_csv_path, summarize_csv_stream, CsvParser};
+pub use crate::parser::{summarize_csv_path, summarize_csv_stream, CsvParser};
 pub use csv_async::ByteRecord;
 
 use thiserror::Error;
