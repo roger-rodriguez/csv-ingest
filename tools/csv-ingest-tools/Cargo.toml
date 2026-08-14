@@ -13,7 +13,7 @@ fast_local = ["csv_ingest/fast_local"]
 anyhow = "1"
 clap = "4"
 crc32fast = "1"
-csv_ingest = { path = ".." }
+csv_ingest = { path = "../../crates/csv-ingest" }
 tokio = { version = "1", features = [
   "fs",
   "io-util",

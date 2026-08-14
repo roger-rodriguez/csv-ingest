@@ -7,6 +7,10 @@
 
 Rust Library for parsing CSV files from local files or any async source (`AsyncRead`). It focuses on high throughput, low memory, and correctness by default.
 
+The repository is a Cargo workspace. The publishable parser lives in
+`crates/csv-ingest`, while unpublished development binaries live in
+`tools/csv-ingest-tools`.
+
 ## ✨ Features
 
 - Automatic decompression (gzip, zstd) via content‑encoding, content‑type, or file extension

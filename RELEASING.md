@@ -10,7 +10,7 @@ Update Rust:
 rustup update stable
 ```
 
-## 1. Update Cargo.toml
+## 1. Update `crates/csv-ingest/Cargo.toml`
 
 ```toml
 [package]
