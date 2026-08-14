@@ -5,9 +5,11 @@ remain unpublished and must not appear in the packaged crate.
 
 Publishing uses crates.io Trusted Publishing through
 `.github/workflows/release.yml`; no long-lived crates.io token is stored in
-GitHub. The crates.io publisher configuration must match this repository, the
-`release.yml` workflow filename, and the `release` GitHub environment. Protect
-that environment with an explicit approval before deployment.
+GitHub. After publishing succeeds, the workflow tags the published commit and
+creates a GitHub release from the matching changelog section. The crates.io
+publisher configuration must match this repository, the `release.yml` workflow
+filename, and the `release` GitHub environment. Protect that environment with
+an explicit approval before deployment.
 
 ## 1. Prepare a release pull request
 
@@ -70,15 +72,9 @@ short-lived crates.io token.
    version, lockfile, and package before requesting publishing approval.
 5. Review the pending `release` environment deployment and approve it only when
    the validated commit and version are correct.
-6. After the publish job succeeds, tag that same commit and create the GitHub
-   release from the matching changelog section:
-
-```bash
-git tag -a vX.Y.Z -m "csv_ingest vX.Y.Z"
-git push origin vX.Y.Z
-gh release create vX.Y.Z --verify-tag --title "csv_ingest vX.Y.Z" --notes-file <release-notes-file>
-```
-
+6. Wait for the complete workflow to succeed. After crates.io publishing, it
+   creates an annotated `vX.Y.Z` tag on the exact published commit and a GitHub
+   release from that version's `CHANGELOG.md` section.
 7. Verify the new version on crates.io and confirm its generated documentation
    builds successfully on docs.rs.
 
@@ -90,3 +86,7 @@ fix the problem, increment the version, and publish a new release:
 ```bash
 cargo yank --vers X.Y.Z csv_ingest
 ```
+
+If crates.io publishing succeeds but the GitHub release job fails, use **Re-run
+failed jobs** in GitHub Actions. The job safely reuses a tag only when it points
+to the exact published commit and treats an existing GitHub release as success.

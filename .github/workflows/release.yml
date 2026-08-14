@@ -78,3 +78,75 @@ jobs:
         run: cargo publish --package csv_ingest --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  github-release:
+    name: Create GitHub release v${{ inputs.version }}
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout published commit
+        uses: actions/checkout@v6
+
+      - name: Prepare release notes
+        run: |
+          awk -v version="$VERSION" '
+            index($0, "## [" version "]") == 1 {
+              capture = 1
+              next
+            }
+            capture && /^## / {
+              exit
+            }
+            capture {
+              print
+            }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+
+          if [[ ! -s "$RUNNER_TEMP/release-notes.md" ]]; then
+            echo "No changelog section found for $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Create or verify tag
+        run: |
+          tag="v$VERSION"
+          remote_target=$(git ls-remote origin "refs/tags/$tag^{}" | awk '{print $1}')
+
+          if [[ -z "$remote_target" ]]; then
+            remote_target=$(git ls-remote origin "refs/tags/$tag" | awk '{print $1}')
+          fi
+
+          if [[ -n "$remote_target" ]]; then
+            if [[ "$remote_target" != "$GITHUB_SHA" ]]; then
+              echo "$tag points to $remote_target, expected $GITHUB_SHA" >&2
+              exit 1
+            fi
+            echo "$tag already points to the published commit"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "$tag" "$GITHUB_SHA" --message "csv_ingest $tag"
+          git push origin "$tag"
+
+      - name: Create GitHub release
+        run: |
+          tag="v$VERSION"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "GitHub release $tag already exists"
+            exit 0
+          fi
+
+          gh release create "$tag" \
+            --verify-tag \
+            --title "csv_ingest $tag" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
