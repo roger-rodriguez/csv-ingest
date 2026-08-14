@@ -156,7 +156,20 @@ async fn read_validated_record<R>(
 where
     R: AsyncRead + Unpin + Send,
 {
-    if !reader.read_byte_record(record).await? {
+    let has_record = reader.read_byte_record(record).await.map_err(|error| {
+        let error = CsvIngestError::from(error);
+        match error {
+            CsvIngestError::RaggedRow {
+                expected, actual, ..
+            } => CsvIngestError::RaggedRow {
+                row: Some(*records_read + 1),
+                expected,
+                actual,
+            },
+            error => error,
+        }
+    })?;
+    if !has_record {
         return Ok(false);
     }
     *records_read += 1;
@@ -325,6 +338,32 @@ mod tests {
         assert!(matches!(
             error,
             CsvIngestError::MissingRequiredField { row: 1, header } if header == "value"
+        ));
+    }
+
+    #[tokio::test]
+    async fn headerless_ragged_errors_use_one_based_data_row_numbers() {
+        let options = CsvOptions {
+            headers: CsvHeaderMode::Absent,
+            ..CsvOptions::default()
+        };
+        let mut parser = CsvParser::from_reader(Cursor::new(b"A\nB,C\n"), &[], &options)
+            .await
+            .expect("construct headerless parser");
+
+        parser
+            .next_record()
+            .await
+            .expect("read first row")
+            .expect("first row");
+        let error = parser
+            .next_record()
+            .await
+            .expect_err("ragged second row must fail");
+
+        assert!(matches!(
+            error,
+            CsvIngestError::RaggedRow { row: Some(2), .. }
         ));
     }
 
