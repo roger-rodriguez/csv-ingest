@@ -1,14 +1,13 @@
 use clap::{Arg, ArgAction, Command};
 use crc32fast::Hasher as Crc32;
 use csv_ingest::{
-    reader_from_path, summarize_csv_stream, ByteRecord, CsvHeaderMode, CsvOptions, CsvTerminator,
-    CsvTrim,
+    reader_from_path, summarize_csv_stream, BoxedCsvReader, ByteRecord, CsvMeta, CsvOptions,
+    CsvParser,
 };
 #[cfg(feature = "fast_local")]
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
-use tokio::io::AsyncRead;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
 
     let start = Instant::now();
 
-    let (reader, _meta): (Box<dyn AsyncRead + Unpin + Send>, csv_ingest::CsvMeta) =
+    let (reader, _meta): (BoxedCsvReader<'static>, CsvMeta) =
         if let Some(p) = matches.get_one::<PathBuf>("path") {
             #[cfg(feature = "fast_local")]
             if matches.get_flag("fast-local")
@@ -65,13 +64,13 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             let (r, m) = reader_from_path(p).await?;
-            (Box::new(r), m)
+            (r, m)
         } else {
             panic!("Provide --path <file>");
         };
 
     let (summary, crc) = if matches.get_flag("verify") {
-        // Run a stricter verification parser that mirrors summarize_csv_stream but adds checksums
+        // Use the public record parser and add a checksum over the selected sample.
         let (summary, crc) = verify_and_count(
             reader,
             &required_refs,
@@ -113,115 +112,34 @@ async fn verify_and_count<R: tokio::io::AsyncRead + Unpin + Send>(
     options: &CsvOptions,
     limit: Option<u64>,
 ) -> anyhow::Result<(csv_ingest::CsvIngestSummary, u32)> {
-    use csv_async::{AsyncReaderBuilder, Terminator, Trim};
-    options.validate()?;
-    if options.headers == CsvHeaderMode::Absent && !required_headers.is_empty() {
-        anyhow::bail!("required headers cannot be validated when headers are absent");
-    }
-    let mut builder = AsyncReaderBuilder::new();
-    builder
-        .delimiter(options.delimiter)
-        .terminator(match options.terminator {
-            CsvTerminator::CrLf => Terminator::CRLF,
-            CsvTerminator::Any(byte) => Terminator::Any(byte),
-        })
-        .has_headers(options.headers == CsvHeaderMode::Present)
-        .flexible(options.flexible)
-        .trim(match options.trim {
-            CsvTrim::None => Trim::None,
-            CsvTrim::Headers => Trim::Headers,
-            CsvTrim::Fields => Trim::Fields,
-            CsvTrim::All => Trim::All,
-        })
-        .quoting(options.quoting)
-        .quote(options.quote)
-        .escape(options.escape)
-        .double_quote(options.double_quote)
-        .buffer_capacity(1 << 20);
-    let mut rdr = builder.create_reader(reader);
-
-    let headers = if options.headers == CsvHeaderMode::Present {
-        rdr.byte_headers().await?.clone()
-    } else {
-        ByteRecord::new()
-    };
-    let mut width = (options.headers == CsvHeaderMode::Present).then_some(headers.len());
-
-    let required_indices = required_headers
+    let mut parser = CsvParser::from_reader(reader, required_headers, options).await?;
+    let headers = parser
+        .headers()
         .iter()
-        .map(|req_h| {
-            headers
-                .iter()
-                .position(|h| h == req_h.as_bytes())
-                .ok_or_else(|| anyhow::anyhow!("Missing required header: '{}'", req_h))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
-    if limit == Some(0) {
-        return Ok((
-            csv_ingest::CsvIngestSummary {
-                row_count: 0,
-                headers: headers
-                    .iter()
-                    .map(std::str::from_utf8)
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-            },
-            Crc32::new().finalize(),
-        ));
-    }
-
+        .map(std::str::from_utf8)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     let mut record = ByteRecord::new();
-    let mut row_count: u64 = 0;
     let mut crc = Crc32::new();
-    while rdr.read_byte_record(&mut record).await? {
-        row_count += 1;
-        let expected_width = *width.get_or_insert(record.len());
-        if !options.flexible && record.len() != expected_width {
-            return Err(anyhow::anyhow!(
-                "Row {} width mismatch: got {}, expected {}",
-                row_count,
-                record.len(),
-                expected_width
-            ));
-        }
-        for (i, &idx) in required_indices.iter().enumerate() {
-            if record.get(idx).is_none() {
-                return Err(anyhow::anyhow!(
-                    "Row {} missing required field '{}'",
-                    row_count,
-                    required_headers[i]
-                ));
-            }
-        }
-        // accumulate CRC32 over all fields separated by '\x1f' (unit separator)
+    while limit.is_none_or(|limit| parser.records_read() < limit)
+        && parser.read_record(&mut record).await?
+    {
         for (fi, field) in record.iter().enumerate() {
             if fi > 0 {
                 crc.update(&[0x1f]);
             }
             crc.update(field);
         }
-        if let Some(lim) = limit {
-            if row_count >= lim {
-                break;
-            }
-        }
     }
-    let digest = crc.finalize();
+
     Ok((
         csv_ingest::CsvIngestSummary {
-            row_count,
-            headers: headers
-                .iter()
-                .map(std::str::from_utf8)
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
+            row_count: parser.records_read(),
+            headers,
         },
-        digest,
+        crc.finalize(),
     ))
 }
 

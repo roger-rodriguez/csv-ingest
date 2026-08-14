@@ -227,7 +227,6 @@ dependencies = [
  "anyhow",
  "async-compression",
  "bytes",
- "clap",
  "crc32fast",
  "csv-async",
  "encoding_rs",
@@ -239,6 +238,18 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "csv_ingest_tools"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crc32fast",
+ "csv_ingest",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

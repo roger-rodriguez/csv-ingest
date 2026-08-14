@@ -39,6 +39,7 @@ jobs:
       - name: Enforce library coverage
         run: >-
           cargo llvm-cov
+          --package csv_ingest
           --all-features
           --all-targets
           --ignore-filename-regex '(^|/)(bin|examples)/'
@@ -65,13 +66,19 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (warnings as errors)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Build (default features)
-        run: cargo build --release --locked
+      - name: Build core (default features)
+        run: cargo build --package csv_ingest --release --locked
 
-      - name: Test
-        run: cargo test --all --locked --no-fail-fast
+      - name: Build development tools
+        run: cargo build --package csv_ingest_tools --release --locked --features fast_local
+
+      - name: Test core
+        run: cargo test --package csv_ingest --all-targets --all-features --locked --no-fail-fast
+
+      - name: Test development tools
+        run: cargo test --package csv_ingest_tools --all-targets --all-features --locked --no-fail-fast
 
       # ---- Local perf smoke: generate CSV and run bench ----
       - name: Install zstd
@@ -80,7 +87,7 @@ jobs:
       - name: Generate 5M rows (zstd)
         run: |
           mkdir -p data
-          # gen & bench binaries built by the earlier `cargo build --release`
+          # gen & bench binaries built by the development-tools step
           ./target/release/gen --rows 5000000 --with-header | zstd -T0 -q -o data/5m.csv.zst
           ls -lh data
 

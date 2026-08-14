@@ -10,7 +10,7 @@ Update Rust:
 rustup update stable
 ```
 
-## 1. Update Cargo.toml
+## 1. Update `crates/csv-ingest/Cargo.toml`
 
 ```toml
 [package]
@@ -22,27 +22,27 @@ version = "X.X.X"
 
 ```bash
 cargo fmt --all
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo doc --no-deps
+cargo clippy -p csv_ingest --all-targets --all-features -- -D warnings
+cargo test -p csv_ingest --all-targets --all-features --locked
+cargo doc -p csv_ingest --no-deps --all-features
 ```
 
 ## 3. Package locally
 
 ```bash
-cargo package
+cargo package -p csv_ingest --locked
 ```
 
 ## 4. Dry-run publish
 
 ```bash
-cargo publish --dry-run
+cargo publish -p csv_ingest --dry-run
 ```
 
 ## 5. Publish for real
 
 ```bash
-cargo publish
+cargo publish -p csv_ingest
 ```
 
 ## 6. Post-publish

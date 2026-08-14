@@ -1,0 +1,25 @@
+[package]
+name = "csv_ingest_tools"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[features]
+default = []
+fast_local = ["csv_ingest/fast_local"]
+
+[dependencies]
+anyhow = "1"
+clap = "4"
+crc32fast = "1"
+csv_ingest = { path = "../../crates/csv-ingest" }
+tokio = { version = "1", features = [
+  "fs",
+  "io-util",
+  "macros",
+  "rt-multi-thread",
+] }
+
+[dev-dependencies]
+tempfile = "3"
