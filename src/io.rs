@@ -1,4 +1,4 @@
-use crate::CsvResult;
+use crate::{CsvResult, DecodePolicy};
 use async_compression::tokio::bufread::{GzipDecoder, ZstdDecoder};
 use std::path::Path;
 use tokio::fs::File;
@@ -18,6 +18,8 @@ pub struct CsvMeta {
     pub name_hint: String,
     /// Which character encoding to expect (defaults to UTF-8)
     pub charset: &'static encoding_rs::Encoding,
+    /// How malformed encoded input is handled while transcoding (defaults to strict).
+    pub decode_policy: DecodePolicy,
 }
 
 impl Default for CsvMeta {
@@ -27,6 +29,7 @@ impl Default for CsvMeta {
             content_encoding: String::new(),
             name_hint: String::new(),
             charset: encoding_rs::UTF_8,
+            decode_policy: DecodePolicy::Strict,
         }
     }
 }
@@ -65,7 +68,7 @@ where
         // No transcoding needed; pass through as bytes
         Box::new(decompressed)
     } else {
-        let transcoder = Transcoder::new(meta.charset);
+        let transcoder = Transcoder::new(meta.charset, meta.decode_policy);
         let framed = FramedRead::new(decompressed, transcoder);
         Box::new(StreamReader::new(framed))
     };
@@ -114,7 +117,7 @@ pub async fn reader_from_path(path: &Path) -> CsvResult<(impl AsyncRead + Unpin 
 mod tests {
     use super::*;
     use async_compression::tokio::write::{GzipEncoder, ZstdEncoder};
-    use std::io::Cursor;
+    use std::io::{self, Cursor};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     async fn gzip(bytes: &[u8]) -> Vec<u8> {
@@ -131,14 +134,15 @@ mod tests {
         encoder.into_inner()
     }
 
-    async fn decode(raw: Vec<u8>, meta: CsvMeta) -> (Vec<u8>, CsvMeta) {
+    async fn try_decode(raw: Vec<u8>, meta: CsvMeta) -> io::Result<(Vec<u8>, CsvMeta)> {
         let (mut reader, normalized) = build_csv_reader(Cursor::new(raw), meta);
         let mut decoded = Vec::new();
-        reader
-            .read_to_end(&mut decoded)
-            .await
-            .expect("read decoded");
-        (decoded, normalized)
+        reader.read_to_end(&mut decoded).await?;
+        Ok((decoded, normalized))
+    }
+
+    async fn decode(raw: Vec<u8>, meta: CsvMeta) -> (Vec<u8>, CsvMeta) {
+        try_decode(raw, meta).await.expect("read decoded")
     }
 
     #[tokio::test]
@@ -227,6 +231,57 @@ mod tests {
         let (decoded, _) = decode(b"name\ncaf\xe9\n".to_vec(), meta).await;
 
         assert_eq!(decoded, "name\ncafé\n".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn malformed_transcoded_input_is_rejected_by_default() {
+        let meta = CsvMeta {
+            charset: encoding_rs::SHIFT_JIS,
+            ..Default::default()
+        };
+
+        let error = try_decode(vec![0x82, 0x20], meta)
+            .await
+            .expect_err("malformed input must fail");
+        let typed = error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<crate::TranscodingError>())
+            .expect("typed transcoding error");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(typed.encoding(), "Shift_JIS");
+    }
+
+    #[tokio::test]
+    async fn replacement_mode_is_an_explicit_opt_in() {
+        let meta = CsvMeta {
+            charset: encoding_rs::SHIFT_JIS,
+            decode_policy: DecodePolicy::Replace,
+            ..Default::default()
+        };
+
+        let (decoded, normalized) = decode(vec![0x82, 0x20], meta).await;
+
+        assert_eq!(decoded, "� ".as_bytes());
+        assert_eq!(normalized.decode_policy, DecodePolicy::Replace);
+    }
+
+    #[tokio::test]
+    async fn incomplete_trailing_sequence_is_rejected_at_eof() {
+        let meta = CsvMeta {
+            charset: encoding_rs::SHIFT_JIS,
+            ..Default::default()
+        };
+
+        let error = try_decode(vec![0x82], meta)
+            .await
+            .expect_err("incomplete trailing sequence must fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<crate::TranscodingError>())
+            .is_some());
     }
 
     #[tokio::test]

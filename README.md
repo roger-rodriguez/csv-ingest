@@ -10,7 +10,7 @@ Rust Library for parsing CSV files from local files or any async source (`AsyncR
 ## ✨ Features
 
 - Automatic decompression (gzip, zstd) via content‑encoding, content‑type, or file extension
-- Optional transcoding to UTF‑8 using `encoding_rs`
+- Optional transcoding to UTF‑8 using `encoding_rs`, with malformed input rejected by default
 - Streaming CSV parsing using `csv_async` (no full‑file buffering)
 - Header validation to ensure required columns exist
 - Optional fast local mode (mmap + parallel memchr) for uncompressed UTF‑8 CSVs
@@ -86,6 +86,19 @@ async fn main() -> anyhow::Result<()> {
 Set `headers` to `CsvHeaderMode::Absent` to count every record as data; named required-header validation is then unavailable. Set `flexible` to `true` to permit ragged rows, although rows must still contain every required column. Invalid delimiter, quote, escape, and terminator combinations return `CsvIngestError::UnsupportedOptions` before parsing.
 
 Compression, content type, filename hints, and character transcoding remain separate transport concerns in `CsvMeta`.
+When `charset` is not UTF-8, transcoding rejects malformed or incomplete byte sequences by default.
+Callers that explicitly want replacement characters can set `decode_policy` to
+`DecodePolicy::Replace`; each malformed sequence is then replaced with `U+FFFD`.
+
+```rs
+use csv_ingest::{CsvMeta, DecodePolicy};
+
+let meta = CsvMeta {
+    charset: encoding_rs::SHIFT_JIS,
+    decode_policy: DecodePolicy::Replace,
+    ..CsvMeta::default()
+};
+```
 
 ### 🌊 Streaming (recommended default)
 
