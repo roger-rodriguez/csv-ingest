@@ -1,3 +1,8 @@
+[workspace]
+members = [".", "tools"]
+default-members = ["."]
+resolver = "2"
+
 [package]
 name = "csv_ingest"
 version = "0.1.1"
@@ -13,7 +18,14 @@ categories = [
   "filesystem",
   "parser-implementations",
 ]
-include = ["src/**", "Cargo.toml", "README.md", "LICENSE", "examples/**"]
+include = [
+  "src/**",
+  "tests/**",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE",
+  "examples/**",
+]
 
 [lib]
 name = "csv_ingest"
@@ -24,7 +36,6 @@ default = []
 fast_local = ["memmap2", "memchr"]
 
 [dependencies]
-anyhow = "1"
 async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
 bytes = "1"
 csv-async = { version = "1", default-features = false, features = ["tokio"] }
@@ -37,7 +48,6 @@ tokio = { version = "1", features = [
   "rt-multi-thread",
 ] }
 tokio-util = { version = "0.7", features = ["codec", "io", "compat"] }
-clap = { version = "4" }
 crc32fast = "1"
 memmap2 = { version = "0.9", optional = true }
 memchr = { version = "2.7", optional = true }
@@ -45,16 +55,9 @@ thiserror = { version = "2.0.16" }
 
 
 [dev-dependencies]
+anyhow = "1"
 proptest = { version = "~1.9.0", default-features = false, features = ["std"] }
 tempfile = "3"
-
-[[bin]]
-name = "gen"
-path = "bin/gen.rs"
-
-[[bin]]
-name = "bench"
-path = "bin/bench.rs"
 
 [profile.release]
 codegen-units = 1

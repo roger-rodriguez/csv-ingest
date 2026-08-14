@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
 
     // Very simple deterministic data: sku, col1, col2, ...
     for i in 0..rows {
-        write!(&mut out, "SKU{:010}", i)?;
+        write!(&mut out, "SKU{i:010}")?;
         for c in 1..cols {
             write!(&mut out, "{}v{}_{}", delim, c, i)?;
         }

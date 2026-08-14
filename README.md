@@ -169,12 +169,14 @@ Use `--verify --limit` to validate on a global row sample when benchmarking. Ver
 
 ## 🛠️ CLI (dev helpers)
 
-This repo ships two binaries to generate synthetic CSV data and measure throughput.
+The unpublished `csv_ingest_tools` workspace package ships two binaries to
+generate synthetic CSV data and measure throughput without adding CLI
+dependencies to the published parser crate.
 
 ```bash
 # Build release binaries (enable fast_local for the optional mmap path)
-cargo build --release --bins
-cargo build --release --bins --features fast_local
+cargo build -p csv_ingest_tools --release --bins
+cargo build -p csv_ingest_tools --release --bins --features fast_local
 
 # Generate 100M rows and compress
 ./target/release/gen --rows 100000000 --with-header | gzip -c > data/100m.csv.gz
@@ -228,6 +230,7 @@ With `cargo-llvm-cov` 0.8.6 or newer installed, run the same gate locally:
 
 ```bash
 cargo llvm-cov --all-features --all-targets \
+  -p csv_ingest \
   --ignore-filename-regex '(^|/)(bin|examples)/' \
   --fail-under-lines 95 \
   --fail-under-file-lines 90 \
