@@ -13,6 +13,10 @@ jobs:
   coverage:
     name: Coverage gate (95% lines)
     runs-on: ubuntu-latest
+    env:
+      # Coverage instrumentation executes compiler plugins on the runner.
+      # Do not inherit the local-only target-cpu=native optimization.
+      RUSTFLAGS: ""
 
     steps:
       - name: Checkout
