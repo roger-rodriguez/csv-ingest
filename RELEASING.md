@@ -3,6 +3,12 @@
 Only `crates/csv-ingest` is published. Workspace packages under `tools/` must
 remain unpublished and must not appear in the packaged crate.
 
+Publishing uses crates.io Trusted Publishing through
+`.github/workflows/release.yml`; no long-lived crates.io token is stored in
+GitHub. The crates.io publisher configuration must match this repository, the
+`release.yml` workflow filename, and the `release` GitHub environment. Protect
+that environment with an explicit approval before deployment.
+
 ## 1. Prepare a release pull request
 
 1. Start from current `main` on a dedicated release branch.
@@ -52,20 +58,20 @@ workspace tools, fuzz targets, generated data, or build artifacts are included.
 
 ## 3. Publish the merged commit
 
-Publishing is irreversible. Obtain explicit maintainer confirmation immediately
-before this section.
+Publishing is irreversible. Approval of the `release` GitHub environment is the
+final maintainer confirmation immediately before the publish job receives a
+short-lived crates.io token.
 
 1. Switch to `main`, pull with `--ff-only`, and verify a clean working tree.
 2. Confirm the release pull request and current `main` CI are green.
 3. Confirm the manifest and package both report the intended version.
-4. Publish the exact merged commit:
-
-```bash
-cargo +stable publish -p csv_ingest --locked
-```
-
-5. Tag that same commit and create the GitHub release from the matching changelog
-   section:
+4. In GitHub Actions, run **Publish to crates.io** from `main` and enter the
+   manifest version without a `v` prefix. The workflow verifies the branch,
+   version, lockfile, and package before requesting publishing approval.
+5. Review the pending `release` environment deployment and approve it only when
+   the validated commit and version are correct.
+6. After the publish job succeeds, tag that same commit and create the GitHub
+   release from the matching changelog section:
 
 ```bash
 git tag -a vX.Y.Z -m "csv_ingest vX.Y.Z"
@@ -73,7 +79,7 @@ git push origin vX.Y.Z
 gh release create vX.Y.Z --verify-tag --title "csv_ingest vX.Y.Z" --notes-file <release-notes-file>
 ```
 
-6. Verify the new version on crates.io and confirm its generated documentation
+7. Verify the new version on crates.io and confirm its generated documentation
    builds successfully on docs.rs.
 
 ## Recovery
