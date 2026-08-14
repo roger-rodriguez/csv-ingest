@@ -11,6 +11,11 @@ The repository is a Cargo workspace. The publishable parser lives in
 `crates/csv-ingest`, while unpublished development binaries live in
 `tools/csv-ingest-tools`.
 
+The minimum supported Rust version (MSRV) is 1.82. CI tests both Rust 1.82 and
+the latest stable toolchain. The MSRV may be raised when newer Rust releases
+allow a materially simpler or faster implementation; the crate does not carry
+compatibility shims solely to preserve older compiler support.
+
 ## ✨ Features
 
 - Automatic decompression (gzip, zstd) via content‑encoding, content‑type, or file extension
