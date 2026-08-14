@@ -25,7 +25,7 @@ If you need to parse from a remote source, construct an `AsyncRead` in your app 
 
 ```rust
 // pseudo
-let (reader, meta) = build_csv_reader(remote_async_read, CsvMeta { content_type, content_encoding, name_hint, ..Default::default() });
+let (reader, meta) = build_csv_reader(remote_async_read, CsvMeta { content_type, content_encoding, name_hint, ..Default::default() })?;
 let options = CsvOptions::default();
 let summary = process_csv_stream(reader, &["sku"], &options).await?;
 ```
@@ -86,6 +86,13 @@ async fn main() -> anyhow::Result<()> {
 Set `headers` to `CsvHeaderMode::Absent` to count every record as data; named required-header validation is then unavailable. Set `flexible` to `true` to permit ragged rows, although rows must still contain every required column. Invalid delimiter, quote, escape, and terminator combinations return `CsvIngestError::UnsupportedOptions` before parsing.
 
 Compression, content type, filename hints, and character transcoding remain separate transport concerns in `CsvMeta`.
+Compression detection uses the first available signal in this order:
+`content_encoding`, a compression-specific `content_type`, then the extension in
+`name_hint`. Values are matched case-insensitively, and content-type parameters
+are ignored. Disagreement between gzip and zstd signals is rejected, as are
+unsupported or stacked content encodings. A plain content type such as
+`text/csv` describes the underlying media and does not prevent extension fallback.
+
 When `charset` is not UTF-8, transcoding rejects malformed or incomplete byte sequences by default.
 Callers that explicitly want replacement characters can set `decode_policy` to
 `DecodePolicy::Replace`; each malformed sequence is then replaced with `U+FFFD`.

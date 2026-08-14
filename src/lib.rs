@@ -40,6 +40,19 @@ pub enum CsvIngestError {
     MissingRequiredField { row: usize, header: String },
     #[error("Unsupported CSV options: {0}")]
     UnsupportedOptions(String),
+    #[error("Unsupported Content-Encoding: {0}")]
+    UnsupportedContentEncoding(String),
+    #[error("Stacked Content-Encoding values are unsupported: {0}")]
+    UnsupportedStackedContentEncoding(String),
+    #[error(
+        "Conflicting compression metadata: {higher_source} indicates {higher}, but {lower_source} indicates {lower}"
+    )]
+    ConflictingCompressionMetadata {
+        higher_source: &'static str,
+        higher: &'static str,
+        lower_source: &'static str,
+        lower: &'static str,
+    },
     #[error(transparent)]
     InvalidUtf8(#[from] std::str::Utf8Error),
     #[error(transparent)]
