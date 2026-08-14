@@ -79,20 +79,32 @@ fn fast_local_process_with_workers(
     }
 
     let (headers, body_start, expected_width) = if options.headers == CsvHeaderMode::Present {
-        let (header_end, body_start) =
-            next_record_terminator(data, data_start, len, options.terminator).unwrap_or((len, len));
-        let raw_header = &data[data_start..header_end];
-        reject_quotes(raw_header, data_start, options)?;
+        let Some((header_start, header_end, body_start)) =
+            next_nonempty_record(data, data_start, len, options.terminator)
+        else {
+            if let Some(required) = required_headers.first() {
+                return Err(CsvIngestError::MissingHeader((*required).to_string()));
+            }
+            return Ok((
+                CsvIngestSummary {
+                    row_count: 0,
+                    headers: vec![],
+                },
+                verify_crc.then_some(0),
+            ));
+        };
+        let raw_header = &data[header_start..header_end];
+        reject_quotes(raw_header, header_start, options)?;
         let headers = parse_header(raw_header, options.delimiter, options.trims_headers())?;
         let expected_width = Some(headers.len());
         (headers, body_start, expected_width)
     } else {
-        let expected_width = (!options.flexible).then(|| {
-            let first_end = next_record_terminator(data, data_start, len, options.terminator)
-                .map(|(record_end, _)| record_end)
-                .unwrap_or(len);
-            memchr_iter(options.delimiter, &data[data_start..first_end]).count() + 1
-        });
+        let expected_width = (!options.flexible)
+            .then(|| next_nonempty_record(data, data_start, len, options.terminator))
+            .flatten()
+            .map(|(record_start, record_end, _)| {
+                memchr_iter(options.delimiter, &data[record_start..record_end]).count() + 1
+            });
         (Vec::new(), data_start, expected_width)
     };
 
@@ -187,10 +199,14 @@ fn limited_body_end(
 
     let mut rows = 0u64;
     let mut cursor = body_start;
-    while let Some((_, next_record)) = next_record_terminator(data, cursor, len, terminator) {
-        rows += 1;
-        if rows == limit {
-            return next_record;
+    while let Some((record_end, next_record)) =
+        next_record_terminator(data, cursor, len, terminator)
+    {
+        if record_end > cursor {
+            rows += 1;
+            if rows == limit {
+                return next_record;
+            }
         }
         cursor = next_record;
     }
@@ -246,15 +262,17 @@ fn process_chunk(
         next_record_terminator(slice, cursor, slice.len(), options.terminator)
     {
         let row = &slice[cursor..record_end];
-        process_row(
-            row,
-            options,
-            required_field,
-            expected_width,
-            crc.as_mut(),
-            row_count + 1,
-        )?;
-        row_count += 1;
+        if !row.is_empty() {
+            process_row(
+                row,
+                options,
+                required_field,
+                expected_width,
+                crc.as_mut(),
+                row_count + 1,
+            )?;
+            row_count += 1;
+        }
         cursor = next_record;
     }
 
@@ -396,6 +414,24 @@ fn next_record_terminator(
         record_end + 1
     };
     Some((record_end, next_record))
+}
+
+fn next_nonempty_record(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    terminator: CsvTerminator,
+) -> Option<(usize, usize, usize)> {
+    let mut cursor = start;
+    while let Some((record_end, next_record)) =
+        next_record_terminator(data, cursor, end, terminator)
+    {
+        if record_end > cursor {
+            return Some((cursor, record_end, next_record));
+        }
+        cursor = next_record;
+    }
+    (cursor < end).then_some((cursor, end, end))
 }
 
 fn trim_ascii_if(bytes: &[u8], trim: bool) -> &[u8] {
@@ -803,3 +839,6 @@ mod tests {
         assert!(matches!(error, CsvIngestError::InvalidUtf8(_)));
     }
 }
+
+#[cfg(test)]
+mod property_tests;

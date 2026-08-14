@@ -234,6 +234,16 @@ cargo llvm-cov --all-features --all-targets \
   --summary-only
 ```
 
+The fast-local property suite generates supported unquoted CSV fixtures and
+compares them with the streaming parser across 1, 2, and 8 workers:
+
+```bash
+cargo test --features fast_local fast::property_tests::
+```
+
+`proptest` shrinks mismatches and records their seeds under
+`proptest-regressions/`; keep those files as deterministic regression cases.
+
 ## 📄 License
 
 MIT
