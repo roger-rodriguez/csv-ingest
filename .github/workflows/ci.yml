@@ -9,6 +9,10 @@ on:
     # Nightly at 06:00 UTC (2am ET)
     - cron: "0 6 * * *"
 
+env:
+  # Cargo caches can move between runners with different CPU features.
+  RUSTFLAGS: ""
+
 jobs:
   msrv:
     name: MSRV (Rust 1.82)
@@ -30,10 +34,6 @@ jobs:
   coverage:
     name: Coverage gate (95% lines)
     runs-on: ubuntu-latest
-    env:
-      # Coverage instrumentation executes compiler plugins on the runner.
-      # Do not inherit the local-only target-cpu=native optimization.
-      RUSTFLAGS: ""
 
     steps:
       - name: Checkout

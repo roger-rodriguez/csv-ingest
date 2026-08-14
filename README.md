@@ -256,6 +256,45 @@ cargo test --features fast_local fast::property_tests::
 `proptest` shrinks mismatches and records their seeds under
 `proptest-regressions/`; keep those files as deterministic regression cases.
 
+## 🔬 Fuzzing
+
+The nightly-only cargo-fuzz harness is isolated in `tools/csv-ingest-fuzz`,
+outside the published crate and normal workspace checks. Install the pinned
+tool and run a bounded AddressSanitizer smoke locally:
+
+```bash
+cargo install cargo-fuzz --version 0.13.2 --locked
+cargo +nightly fuzz build --fuzz-dir tools/csv-ingest-fuzz fast_local
+mkdir -p tools/csv-ingest-fuzz/target/smoke-corpus
+cargo +nightly fuzz run --fuzz-dir tools/csv-ingest-fuzz fast_local \
+  tools/csv-ingest-fuzz/target/smoke-corpus \
+  tools/csv-ingest-fuzz/corpus/fast_local -- \
+  -max_total_time=60 \
+  -timeout=10 \
+  -max_len=1048576
+```
+
+The first two fuzz bytes select input transformations and parser options; all
+remaining bytes are written to a temporary file and passed to the public
+fast-local API. Curated seeds live under
+`tools/csv-ingest-fuzz/corpus/fast_local`. Explicit 1, 2, and 8 worker coverage
+remains in the deterministic property suite rather than the public API. The
+first corpus directory above receives generated candidates, keeping the
+checked-in seed set deterministic.
+
+Failures are written beneath `tools/csv-ingest-fuzz/artifacts/`. Minimize one
+before diagnosis with:
+
+```bash
+cargo +nightly fuzz tmin --fuzz-dir tools/csv-ingest-fuzz \
+  fast_local tools/csv-ingest-fuzz/artifacts/fast_local/<artifact>
+```
+
+After fixing a failure, retain the minimized case as a deterministic core
+regression test. The scheduled fuzz workflow is a bounded smoke test; it can
+find crashes, panics, hangs, and sanitizer findings but cannot prove the
+absence of all undefined behavior.
+
 ## 📄 License
 
 MIT
