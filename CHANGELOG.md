@@ -6,6 +6,17 @@ releases while the crate remains below 1.0.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-14
+
+### Changed
+
+- Refreshed the locked fast-local dependencies to `memchr` 2.8.3 and
+  `memmap2` 0.9.11 while retaining Rust 1.82 support.
+- Release publishing now uses crates.io Trusted Publishing with a protected
+  GitHub environment instead of a long-lived registry token.
+
+This patch release has no public API changes.
+
 ## [0.2.0] - 2026-08-14
 
 ### Added
@@ -111,5 +122,6 @@ The fast-local path supports only unquoted records. Leave quoting enabled to
 detect and reject quote bytes, or disable it only when quote bytes are ordinary
 data in the input dialect.
 
-[Unreleased]: https://github.com/roger-rodriguez/csv-ingest/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/roger-rodriguez/csv-ingest/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/roger-rodriguez/csv-ingest/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/roger-rodriguez/csv-ingest/compare/v0.1.1...v0.2.0
