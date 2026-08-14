@@ -5,7 +5,7 @@
 //!
 //! Data shape:
 //! - `CsvIngestSummary { row_count, headers }`
-//! - Streaming rows: `csv_async::ByteRecord` (access with `get(idx) -> Option<&[u8]>`)
+//! - Streaming rows: [`ByteRecord`] (access with `get(idx) -> Option<&[u8]>`)
 #![cfg_attr(docsrs, feature(doc_cfg))]
 //
 mod codec;
@@ -13,18 +13,19 @@ mod codec;
 mod fast;
 mod io;
 mod options;
+mod parser;
 
 pub use crate::codec::{DecodePolicy, TranscodingError};
 #[cfg(feature = "fast_local")]
 pub use crate::fast::fast_local_process;
 pub use crate::io::{build_csv_reader, reader_from_path, CsvMeta};
 pub use crate::options::{CsvHeaderMode, CsvOptions, CsvTerminator, CsvTrim};
+pub use crate::parser::{process_csv_stream, summarize_csv_path, summarize_csv_stream, CsvParser};
+pub use csv_async::ByteRecord;
 
-use csv_async::{AsyncReaderBuilder, ByteRecord};
 use thiserror::Error;
-use tokio::io::AsyncRead;
 
-/// Result summary (keep it simple/minimal)
+/// A count-and-header summary of a parsed CSV stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CsvIngestSummary {
     pub row_count: usize,
@@ -63,71 +64,6 @@ pub enum CsvIngestError {
 
 pub type CsvResult<T> = std::result::Result<T, CsvIngestError>;
 
-/// Parse a CSV stream using the shared dialect options and required-header validation.
-pub async fn process_csv_stream<R>(
-    reader: R,
-    required_headers: &[&str],
-    options: &CsvOptions,
-) -> CsvResult<CsvIngestSummary>
-where
-    R: AsyncRead + Unpin + Send + 'static,
-{
-    if options.headers == CsvHeaderMode::Absent && !required_headers.is_empty() {
-        return Err(CsvIngestError::UnsupportedOptions(
-            "required headers cannot be validated when headers are absent".to_string(),
-        ));
-    }
-
-    let mut builder = AsyncReaderBuilder::new();
-    options.configure_reader(&mut builder)?;
-    // Larger internal buffer reduces syscalls and allocator churn.
-    builder.buffer_capacity(1 << 20);
-    let mut rdr = builder.create_reader(reader);
-
-    let headers = if options.headers == CsvHeaderMode::Present {
-        rdr.byte_headers().await?.clone()
-    } else {
-        ByteRecord::new()
-    };
-    let required_indices = required_headers
-        .iter()
-        .map(|req_h| {
-            headers
-                .iter()
-                .position(|h| h == req_h.as_bytes())
-                .ok_or_else(|| CsvIngestError::MissingHeader(req_h.to_string()))
-        })
-        .collect::<CsvResult<Vec<_>>>()?;
-
-    let mut row_count = 0usize;
-    // Use ByteRecord to avoid per-row UTF-8 decoding; decode only when needed
-    let mut record = ByteRecord::new();
-
-    while rdr.read_byte_record(&mut record).await? {
-        row_count += 1;
-
-        for (i, &idx) in required_indices.iter().enumerate() {
-            if record.get(idx).is_none() {
-                return Err(CsvIngestError::MissingRequiredField {
-                    row: row_count,
-                    header: required_headers[i].to_string(),
-                });
-            }
-        }
-    }
-
-    Ok(CsvIngestSummary {
-        row_count,
-        headers: headers
-            .iter()
-            .map(std::str::from_utf8)
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,7 +71,7 @@ mod tests {
 
     #[tokio::test]
     async fn reports_a_missing_required_header() {
-        let error = process_csv_stream(
+        let error = summarize_csv_stream(
             Cursor::new(b"sku,value\nA,1\n"),
             &["missing"],
             &CsvOptions::default(),
@@ -155,7 +91,7 @@ mod tests {
             flexible: true,
             ..CsvOptions::default()
         };
-        let error = process_csv_stream(Cursor::new(b"sku,value\nA\n"), &["value"], &options)
+        let error = summarize_csv_stream(Cursor::new(b"sku,value\nA\n"), &["value"], &options)
             .await
             .expect_err("short row must fail");
 
@@ -167,7 +103,7 @@ mod tests {
 
     #[tokio::test]
     async fn strict_rows_must_match_the_header_width() {
-        let error = process_csv_stream(
+        let error = summarize_csv_stream(
             Cursor::new(b"sku,value\nA\n"),
             &["sku"],
             &CsvOptions::default(),
@@ -180,10 +116,10 @@ mod tests {
 
     #[tokio::test]
     async fn empty_and_header_only_inputs_have_no_rows() {
-        let empty = process_csv_stream(Cursor::new(b""), &[], &CsvOptions::default())
+        let empty = summarize_csv_stream(Cursor::new(b""), &[], &CsvOptions::default())
             .await
             .expect("parse empty input");
-        let header_only = process_csv_stream(
+        let header_only = summarize_csv_stream(
             Cursor::new(b"sku,value\n"),
             &["sku"],
             &CsvOptions::default(),
@@ -208,7 +144,7 @@ mod tests {
             headers: CsvHeaderMode::Absent,
             ..CsvOptions::default()
         };
-        let summary = process_csv_stream(Cursor::new(b"A,1\nB,2\n"), &[], &options)
+        let summary = summarize_csv_stream(Cursor::new(b"A,1\nB,2\n"), &[], &options)
             .await
             .expect("parse headerless input");
 
@@ -227,7 +163,7 @@ mod tests {
             headers: CsvHeaderMode::Absent,
             ..CsvOptions::default()
         };
-        let error = process_csv_stream(Cursor::new(b"A,1\n"), &["sku"], &options)
+        let error = summarize_csv_stream(Cursor::new(b"A,1\n"), &["sku"], &options)
             .await
             .expect_err("required headers without a header row must fail");
 
@@ -242,7 +178,7 @@ mod tests {
             trim: CsvTrim::All,
             ..CsvOptions::default()
         };
-        let summary = process_csv_stream(
+        let summary = summarize_csv_stream(
             Cursor::new(b"\xef\xbb\xbf sku ; value $A;'quoted;value'$"),
             &["sku"],
             &CsvOptions {
@@ -263,7 +199,7 @@ mod tests {
             trim: CsvTrim::Headers,
             ..CsvOptions::default()
         };
-        let summary = process_csv_stream(
+        let summary = summarize_csv_stream(
             Cursor::new(b" sku , value \n A , 1 \n"),
             &["sku"],
             &header_trim,
@@ -277,7 +213,7 @@ mod tests {
             ..CsvOptions::default()
         };
         let summary =
-            process_csv_stream(Cursor::new(b"sku,value\n A , 1 \n"), &["sku"], &field_trim)
+            summarize_csv_stream(Cursor::new(b"sku,value\n A , 1 \n"), &["sku"], &field_trim)
                 .await
                 .expect("trim fields");
         assert_eq!(summary.row_count, 1);
@@ -285,7 +221,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_utf8_headers_return_a_typed_error() {
-        let error = process_csv_stream(
+        let error = summarize_csv_stream(
             Cursor::new(b"sku,\xff\nA,1\n"),
             &["sku"],
             &CsvOptions::default(),
