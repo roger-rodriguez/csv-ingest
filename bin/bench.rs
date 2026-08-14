@@ -107,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn verify_and_count<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+async fn verify_and_count<R: tokio::io::AsyncRead + Unpin + Send>(
     reader: R,
     required_headers: &[&str],
     options: &CsvOptions,
@@ -212,7 +212,7 @@ async fn verify_and_count<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     let digest = crc.finalize();
     Ok((
         csv_ingest::CsvIngestSummary {
-            row_count: row_count as usize,
+            row_count,
             headers: headers
                 .iter()
                 .map(std::str::from_utf8)

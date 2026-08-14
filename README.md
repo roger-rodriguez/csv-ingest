@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
   - `next_record()` reuses parser-owned storage
   - `read_record(...)` reuses a caller-owned `ByteRecord`
 - `CsvIngestSummary`: returned by `summarize_csv_stream(...)` or `summarize_csv_path(...)`
-  - `row_count: usize`
+  - `row_count: u64`
   - `headers: Vec<String>` (exact header strings from the first row)
 - Streaming rows: `csv_ingest::ByteRecord`
   - Access by index: `record.get(idx) -> Option<&[u8]>`
@@ -96,7 +96,13 @@ async fn main() -> anyhow::Result<()> {
 - no whitespace trimming
 - a leading UTF-8 BOM is stripped
 
-Set `headers` to `CsvHeaderMode::Absent` to count every record as data; named required-header validation is then unavailable. Set `flexible` to `true` to permit ragged rows, although rows must still contain every required column. Invalid delimiter, quote, escape, and terminator combinations return `CsvIngestError::UnsupportedOptions` before parsing.
+Set `headers` to `CsvHeaderMode::Absent` to count every record as data; named required-header validation is then unavailable. Set `flexible` to `true` to permit ragged rows, although rows must still contain every required column. Invalid delimiter, quote, escape, and terminator combinations return `CsvIngestError::UnsupportedDialect` before parsing.
+
+Every parser path returns `CsvResult<T>`. Missing headers, missing fields,
+ragged rows, unsupported dialects, invalid text encoding, I/O failures, and CSV
+syntax failures have distinct `CsvIngestError` variants. Row counts and limits
+use `u64` consistently. Reader-based APIs accept borrowed readers; their
+`Send + Unpin` bounds come from the Tokio backend used by `csv_async`.
 
 Compression, content type, filename hints, and character transcoding remain separate transport concerns in `CsvMeta`.
 Compression detection uses the first available signal in this order:

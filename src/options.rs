@@ -66,13 +66,13 @@ impl CsvOptions {
     /// Validate byte combinations before constructing a parser.
     pub fn validate(&self) -> CsvResult<()> {
         if self.is_terminator(self.delimiter) {
-            return Err(CsvIngestError::UnsupportedOptions(
+            return Err(CsvIngestError::UnsupportedDialect(
                 "delimiter cannot also be a record terminator".to_string(),
             ));
         }
 
         if self.quoting && (self.quote == self.delimiter || self.is_terminator(self.quote)) {
-            return Err(CsvIngestError::UnsupportedOptions(
+            return Err(CsvIngestError::UnsupportedDialect(
                 "quote cannot also be the delimiter or a record terminator".to_string(),
             ));
         }
@@ -81,7 +81,7 @@ impl CsvOptions {
             .escape
             .is_some_and(|escape| escape == self.delimiter || self.is_terminator(escape))
         {
-            return Err(CsvIngestError::UnsupportedOptions(
+            return Err(CsvIngestError::UnsupportedDialect(
                 "escape cannot also be the delimiter or a record terminator".to_string(),
             ));
         }
@@ -159,7 +159,7 @@ mod tests {
 
         assert!(matches!(
             options.validate(),
-            Err(CsvIngestError::UnsupportedOptions(message))
+            Err(CsvIngestError::UnsupportedDialect(message))
                 if message.contains("delimiter")
         ));
     }
@@ -173,7 +173,7 @@ mod tests {
 
         assert!(matches!(
             options.validate(),
-            Err(CsvIngestError::UnsupportedOptions(message)) if message.contains("quote")
+            Err(CsvIngestError::UnsupportedDialect(message)) if message.contains("quote")
         ));
 
         CsvOptions {
@@ -194,7 +194,7 @@ mod tests {
 
         assert!(matches!(
             options.validate(),
-            Err(CsvIngestError::UnsupportedOptions(message)) if message.contains("escape")
+            Err(CsvIngestError::UnsupportedDialect(message)) if message.contains("escape")
         ));
     }
 }

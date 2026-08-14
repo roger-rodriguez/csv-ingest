@@ -1,5 +1,6 @@
-use crate::{CsvHeaderMode, CsvIngestSummary, CsvOptions, CsvTerminator};
-use anyhow::{anyhow, Result};
+use crate::{
+    CsvHeaderMode, CsvIngestError, CsvIngestSummary, CsvOptions, CsvResult, CsvTerminator,
+};
 use crc32fast::Hasher as Crc32;
 use memchr::{memchr, memchr2, memchr_iter};
 use memmap2::MmapOptions;
@@ -11,7 +12,7 @@ const FIELD_SEPARATOR: u8 = 0x1f;
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 struct ChunkResult {
-    row_count: usize,
+    row_count: u64,
     crc: Option<Crc32>,
 }
 
@@ -25,7 +26,7 @@ pub fn fast_local_process(
     options: &CsvOptions,
     verify_crc: bool,
     limit_rows: Option<u64>,
-) -> Result<(CsvIngestSummary, Option<u32>)> {
+) -> CsvResult<(CsvIngestSummary, Option<u32>)> {
     let workers = thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1);
@@ -46,11 +47,11 @@ fn fast_local_process_with_workers(
     verify_crc: bool,
     limit_rows: Option<u64>,
     workers: usize,
-) -> Result<(CsvIngestSummary, Option<u32>)> {
-    options.validate().map_err(anyhow::Error::from)?;
+) -> CsvResult<(CsvIngestSummary, Option<u32>)> {
+    options.validate()?;
     if options.headers == CsvHeaderMode::Absent && !required_headers.is_empty() {
-        return Err(anyhow!(
-            "required headers cannot be validated when headers are absent"
+        return Err(CsvIngestError::UnsupportedDialect(
+            "required headers cannot be validated when headers are absent".to_string(),
         ));
     }
 
@@ -65,7 +66,7 @@ fn fast_local_process_with_workers(
     if data_start == len {
         if options.headers == CsvHeaderMode::Present {
             if let Some(required) = required_headers.first() {
-                return Err(anyhow!("Missing required header: '{required}'"));
+                return Err(CsvIngestError::MissingHeader((*required).to_string()));
             }
         }
         return Ok((
@@ -95,21 +96,25 @@ fn fast_local_process_with_workers(
         (Vec::new(), data_start, expected_width)
     };
 
-    let required_indices = required_headers
+    let required_fields = required_headers
         .iter()
         .map(|required| {
             headers
                 .iter()
                 .position(|header| header == required)
-                .ok_or_else(|| anyhow!("Missing required header: '{required}'"))
+                .map(|index| (index, (*required).to_string()))
+                .ok_or_else(|| CsvIngestError::MissingHeader((*required).to_string()))
         })
-        .collect::<Result<Vec<_>>>()?;
-    let max_required_index = required_indices.into_iter().max();
+        .collect::<CsvResult<Vec<_>>>()?;
+    let required_field = required_fields.into_iter().max_by_key(|(index, _)| *index);
+    let required_field = required_field
+        .as_ref()
+        .map(|(index, header)| (*index, header.as_str()));
 
     let body_end = limited_body_end(data, body_start, len, options.terminator, limit_rows);
     let bounds = chunk_bounds(data, body_start, body_end, options.terminator, workers);
 
-    let chunk_results = thread::scope(|scope| -> Result<Vec<ChunkResult>> {
+    let chunk_results = thread::scope(|scope| -> CsvResult<Vec<CsvResult<ChunkResult>>> {
         let mut handles = Vec::with_capacity(bounds.len().saturating_sub(1));
         for window in bounds.windows(2) {
             let start = window[0];
@@ -120,7 +125,7 @@ fn fast_local_process_with_workers(
                     slice,
                     start,
                     options,
-                    max_required_index,
+                    required_field,
                     expected_width,
                     verify_crc,
                 )
@@ -132,14 +137,15 @@ fn fast_local_process_with_workers(
             .map(|handle| {
                 handle
                     .join()
-                    .map_err(|_| anyhow!("fast-local parser worker panicked"))?
+                    .map_err(|_| CsvIngestError::FastLocalWorkerPanicked)
             })
             .collect()
     })?;
 
-    let mut row_count = 0usize;
+    let mut row_count = 0u64;
     let mut combined_crc = verify_crc.then(Crc32::new);
     for result in chunk_results {
+        let result = result.map_err(|error| offset_row(error, row_count))?;
         row_count += result.row_count;
         if let (Some(combined), Some(chunk_crc)) = (&mut combined_crc, result.crc) {
             combined.combine(&chunk_crc);
@@ -152,7 +158,7 @@ fn fast_local_process_with_workers(
     ))
 }
 
-fn parse_header(header: &[u8], delimiter: u8, trim: bool) -> Result<Vec<String>> {
+fn parse_header(header: &[u8], delimiter: u8, trim: bool) -> CsvResult<Vec<String>> {
     let mut headers = Vec::new();
     let mut start = 0usize;
     for end in memchr_iter(delimiter, header) {
@@ -226,13 +232,13 @@ fn process_chunk(
     slice: &[u8],
     absolute_start: usize,
     options: &CsvOptions,
-    max_required_index: Option<usize>,
+    required_field: Option<(usize, &str)>,
     expected_width: Option<usize>,
     verify_crc: bool,
-) -> Result<ChunkResult> {
+) -> CsvResult<ChunkResult> {
     reject_quotes(slice, absolute_start, options)?;
 
-    let mut row_count = 0usize;
+    let mut row_count = 0u64;
     let mut cursor = 0usize;
     let mut crc = verify_crc.then(Crc32::new);
 
@@ -243,9 +249,10 @@ fn process_chunk(
         process_row(
             row,
             options,
-            max_required_index,
+            required_field,
             expected_width,
             crc.as_mut(),
+            row_count + 1,
         )?;
         row_count += 1;
         cursor = next_record;
@@ -255,9 +262,10 @@ fn process_chunk(
         process_row(
             &slice[cursor..],
             options,
-            max_required_index,
+            required_field,
             expected_width,
             crc.as_mut(),
+            row_count + 1,
         )?;
         row_count += 1;
     }
@@ -268,19 +276,21 @@ fn process_chunk(
 fn process_row(
     row: &[u8],
     options: &CsvOptions,
-    max_required_index: Option<usize>,
+    required_field: Option<(usize, &str)>,
     expected_width: Option<usize>,
     crc: Option<&mut Crc32>,
-) -> Result<()> {
+    row_number: u64,
+) -> CsvResult<()> {
     if crc.is_none() && options.flexible {
-        if let Some(max_required_index) = max_required_index {
+        if let Some((required_index, required_header)) = required_field {
             let delimiter_count = memchr_iter(options.delimiter, row)
-                .take(max_required_index)
+                .take(required_index)
                 .count();
-            if delimiter_count < max_required_index {
-                return Err(anyhow!(
-                    "row is missing required field at column index {max_required_index}"
-                ));
+            if delimiter_count < required_index {
+                return Err(CsvIngestError::MissingRequiredField {
+                    row: row_number,
+                    header: required_header.to_string(),
+                });
             }
         }
         return Ok(());
@@ -313,33 +323,57 @@ fn process_row(
     if !options.flexible {
         if let Some(expected_width) = expected_width {
             if field_count != expected_width {
-                return Err(anyhow!(
-                    "row width mismatch: got {field_count}, expected {expected_width}"
-                ));
+                return Err(CsvIngestError::RaggedRow {
+                    row: Some(row_number),
+                    expected: expected_width as u64,
+                    actual: field_count as u64,
+                });
             }
         }
-    } else if let Some(max_required_index) = max_required_index {
-        if field_count <= max_required_index {
-            return Err(anyhow!(
-                "row is missing required field at column index {max_required_index}"
-            ));
+    } else if let Some((required_index, required_header)) = required_field {
+        if field_count <= required_index {
+            return Err(CsvIngestError::MissingRequiredField {
+                row: row_number,
+                header: required_header.to_string(),
+            });
         }
     }
 
     Ok(())
 }
 
-fn reject_quotes(bytes: &[u8], absolute_start: usize, options: &CsvOptions) -> Result<()> {
+fn reject_quotes(bytes: &[u8], absolute_start: usize, options: &CsvOptions) -> CsvResult<()> {
     if options.quoting {
         if let Some(offset) = memchr(options.quote, bytes) {
-            return Err(anyhow!(
+            return Err(CsvIngestError::UnsupportedDialect(format!(
                 "fast-local supports only unquoted CSV; found quote byte {:?} at offset {}",
                 options.quote as char,
                 absolute_start + offset
-            ));
+            )));
         }
     }
     Ok(())
+}
+
+fn offset_row(error: CsvIngestError, offset: u64) -> CsvIngestError {
+    match error {
+        CsvIngestError::MissingRequiredField { row, header } => {
+            CsvIngestError::MissingRequiredField {
+                row: row + offset,
+                header,
+            }
+        }
+        CsvIngestError::RaggedRow {
+            row: Some(row),
+            expected,
+            actual,
+        } => CsvIngestError::RaggedRow {
+            row: Some(row + offset),
+            expected,
+            actual,
+        },
+        error => error,
+    }
 }
 
 fn next_record_terminator(
@@ -530,7 +564,10 @@ mod tests {
         )
         .expect_err("empty input has no required headers");
 
-        assert!(error.to_string().contains("Missing required header"));
+        assert!(matches!(
+            error,
+            CsvIngestError::MissingHeader(header) if header == "sku"
+        ));
     }
 
     #[test]
@@ -564,7 +601,10 @@ mod tests {
         )
         .expect_err("missing header must fail");
 
-        assert!(error.to_string().contains("Missing required header"));
+        assert!(matches!(
+            error,
+            CsvIngestError::MissingHeader(header) if header == "missing"
+        ));
     }
 
     #[test]
@@ -580,7 +620,33 @@ mod tests {
         )
         .expect_err("short verified row must fail");
 
-        assert!(error.to_string().contains("row width mismatch"));
+        assert!(matches!(
+            error,
+            CsvIngestError::RaggedRow {
+                row: Some(1),
+                expected: 2,
+                actual: 1
+            }
+        ));
+    }
+
+    #[test]
+    fn parallel_errors_report_the_global_row_number() {
+        let file = fixture(b"sku,value\nA,1\nB,2\nC\nD,4\n");
+        let error = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            false,
+            None,
+            4,
+        )
+        .expect_err("ragged row must fail");
+
+        assert!(matches!(
+            error,
+            CsvIngestError::RaggedRow { row: Some(3), .. }
+        ));
     }
 
     #[test]
@@ -594,7 +660,10 @@ mod tests {
             fast_local_process_with_workers(file.path(), &["value"], &options, false, None, 2)
                 .expect_err("short row must fail");
 
-        assert!(error.to_string().contains("missing required field"));
+        assert!(matches!(
+            error,
+            CsvIngestError::MissingRequiredField { row: 1, header } if header == "value"
+        ));
     }
 
     #[test]
@@ -716,5 +785,21 @@ mod tests {
                 .expect_err("invalid dialect must fail");
 
         assert!(error.to_string().contains("delimiter"));
+    }
+
+    #[test]
+    fn invalid_utf8_headers_use_the_shared_encoding_error() {
+        let file = fixture(b"sku,\xff\nA,1\n");
+        let error = fast_local_process_with_workers(
+            file.path(),
+            &["sku"],
+            &CsvOptions::default(),
+            false,
+            None,
+            1,
+        )
+        .expect_err("invalid UTF-8 header must fail");
+
+        assert!(matches!(error, CsvIngestError::InvalidUtf8(_)));
     }
 }
