@@ -6,6 +6,17 @@ releases while the crate remains below 1.0.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-14
+
+### Changed
+
+- Reduced the crates.io archive by excluding repository-only integration tests
+  and proptest regression artifacts from the published package.
+- Added a CI package-content gate to prevent those test artifacts from being
+  published again.
+
+This patch release has no public API or runtime behavior changes.
+
 ## [0.2.1] - 2026-08-14
 
 ### Changed
@@ -122,6 +133,7 @@ The fast-local path supports only unquoted records. Leave quoting enabled to
 detect and reject quote bytes, or disable it only when quote bytes are ordinary
 data in the input dialect.
 
-[Unreleased]: https://github.com/roger-rodriguez/csv-ingest/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/roger-rodriguez/csv-ingest/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/roger-rodriguez/csv-ingest/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/roger-rodriguez/csv-ingest/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/roger-rodriguez/csv-ingest/compare/v0.1.1...v0.2.0
