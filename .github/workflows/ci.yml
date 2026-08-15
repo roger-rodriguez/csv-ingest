@@ -98,7 +98,14 @@ jobs:
         run: cargo test --package csv_ingest_tools --all-targets --all-features --locked --no-fail-fast
 
       - name: Verify crates.io package
-        run: cargo package --package csv_ingest --locked
+        run: |
+          cargo package --package csv_ingest --locked
+
+          if cargo package --package csv_ingest --locked --list \
+            | grep -Eq '^(tests|proptest-regressions)/'; then
+            echo "Published package contains repository-only test artifacts" >&2
+            exit 1
+          fi
 
       # ---- Local perf smoke: generate CSV and run bench ----
       - name: Install zstd

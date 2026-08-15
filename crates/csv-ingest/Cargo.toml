@@ -16,9 +16,7 @@ categories = [
 ]
 include = [
   "src/**",
-  "tests/**",
   "examples/**",
-  "proptest-regressions/**",
   "LICENSE",
 ]
 

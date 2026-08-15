@@ -56,7 +56,8 @@ cargo +stable publish -p csv_ingest --locked --dry-run
 ```
 
 Inspect `cargo package -p csv_ingest --locked --list` and confirm that no
-workspace tools, fuzz targets, generated data, or build artifacts are included.
+workspace tools, tests, proptest regressions, fuzz targets, generated data, or
+build artifacts are included.
 
 ## 3. Publish the merged commit
 
